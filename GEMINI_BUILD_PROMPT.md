@@ -32,7 +32,9 @@ the concrete benefit.
 
 ## Approved MVP architecture
 
-- Frontend: Next.js + TypeScript + Tailwind CSS + shadcn/ui + TanStack Query
+- Frontend: Next.js + TypeScript + CSS design tokens + TanStack Query +
+  lucide-react. Preserve the existing operational UI; add a component library
+  only when it removes concrete complexity.
 - Browser API: REST for commands/data and SSE for progress/token streams
 - Backend: Python 3.12 + FastAPI + Pydantic + SQLAlchemy + Alembic
 - Metadata/audit/graph-lite: PostgreSQL

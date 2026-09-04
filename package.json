@@ -1,0 +1,11 @@
+{
+  "name": "koshshield-ai",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "dev": "pnpm --filter @koshshield/web dev",
+    "build": "pnpm --filter @koshshield/web build",
+    "lint": "pnpm --filter @koshshield/web lint",
+    "test": "pnpm --filter @koshshield/web test"
+  }
+}

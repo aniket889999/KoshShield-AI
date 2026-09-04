@@ -1,0 +1,84 @@
+import asyncio
+from typing import Annotated, Literal
+
+import httpx
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from koshshield.config import Settings, get_settings
+from koshshield.database import get_db
+
+router = APIRouter()
+SessionDependency = Annotated[Session, Depends(get_db)]
+SettingsDependency = Annotated[Settings, Depends(get_settings)]
+
+
+class DependencyState(BaseModel):
+    status: Literal["ready", "unavailable", "not_configured"]
+    endpoint: str | None = None
+
+
+class SystemStatus(BaseModel):
+    application: str
+    environment: str
+    processing_boundary: str
+    external_ai_enabled: bool
+    metadata_backend: str
+    vault: DependencyState
+    metadata_store: DependencyState
+    vector_store: DependencyState
+    local_model: DependencyState
+
+
+async def probe(endpoint: str) -> DependencyState:
+    try:
+        async with httpx.AsyncClient(timeout=0.35, trust_env=False) as client:
+            response = await client.get(endpoint)
+            response.raise_for_status()
+        return DependencyState(status="ready", endpoint=endpoint)
+    except (httpx.HTTPError, OSError):
+        return DependencyState(status="unavailable", endpoint=endpoint)
+
+
+@router.get("/health/live")
+def liveness() -> dict[str, str]:
+    return {"status": "alive"}
+
+
+@router.get("/health/ready")
+def readiness(session: SessionDependency) -> dict[str, str]:
+    session.execute(text("SELECT 1"))
+    return {"status": "ready"}
+
+
+@router.get("/system/status", response_model=SystemStatus)
+async def system_status(
+    session: SessionDependency,
+    settings: SettingsDependency,
+) -> SystemStatus:
+    session.execute(text("SELECT 1"))
+    qdrant, model = await asyncio.gather(
+        probe(settings.qdrant_url),
+        probe(f"{settings.llama_base_url}/models"),
+    )
+    vault_status: Literal["ready", "not_configured"] = (
+        "ready" if settings.vault_configured else "not_configured"
+    )
+    metadata_backend = (
+        "PostgreSQL"
+        if settings.database_url.startswith(("postgresql://", "postgresql+"))
+        else "SQLite development"
+    )
+    return SystemStatus(
+        application=settings.app_name,
+        environment=settings.environment,
+        processing_boundary="local-only",
+        external_ai_enabled=False,
+        metadata_backend=metadata_backend,
+        vault=DependencyState(status=vault_status),
+        metadata_store=DependencyState(status="ready"),
+        vector_store=qdrant,
+        local_model=model,
+    )

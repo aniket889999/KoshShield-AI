@@ -32,9 +32,43 @@ The implementation plan and architecture boundaries are documented in
 
 ## Development status
 
-The repository is being established. The first implementation milestone is a
-runnable local foundation with health checks, secure document intake, encrypted
-original storage, an operational dashboard, and baseline tests.
+Milestone 1 is implemented: local health checks, secure document intake,
+AES-256-GCM encrypted original storage, a hash-chained audit trail, an
+operational dashboard, and baseline tests. OCR, PII review, and masked indexing
+are the next milestone.
+
+## Local quick start
+
+Prerequisites: Python 3.12, pnpm 11, and Docker Desktop for PostgreSQL and
+Qdrant. The API can use SQLite when the container services are not running.
+
+```bash
+make bootstrap
+cp .env.example .env
+make generate-key
+```
+
+Copy the generated value into `KOSHSHIELD_MASTER_KEY_BASE64` in `.env`, then
+start the infrastructure and applications in separate terminals:
+
+```bash
+make infra-up
+make dev-api
+make dev-web
+```
+
+Open `http://localhost:3000`. API documentation is available at
+`http://localhost:8000/docs`. A local llama.cpp server is optional in this
+milestone; the dashboard reports it as unavailable until it is running.
+
+## Verification
+
+```bash
+make test
+make lint
+pnpm --filter @koshshield/web build
+docker compose config --quiet
+```
 
 ## Agent handoff
 
