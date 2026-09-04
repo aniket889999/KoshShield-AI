@@ -19,7 +19,7 @@ def test_accepts_and_encrypts_pdf(client: TestClient) -> None:
     assert response.status_code == 201
     document = response.json()
     assert document["filename"] == "tender.pdf"
-    assert document["status"] == "encrypted"
+    assert document["status"].upper() == "ENCRYPTED"
     assert document["media_type"] == "application/pdf"
 
     vault_objects = list(Path("/tmp/koshshield-test-vault").glob("*.ksh"))

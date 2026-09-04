@@ -15,12 +15,14 @@
 - Document metadata and tamper-evident audit event.
 - No plaintext original remains in application storage.
 
-## Milestone 2: extraction and privacy review
+## Milestone 2: extraction and privacy review (completed)
 
-- Native PDF extraction with OCR fallback.
-- Aadhaar, PAN, phone, email, account, and employee-ID recognizers.
-- Page preview with editable redaction decisions.
-- Indexing remains blocked until redactions are approved.
+- Native PDF extraction with PyMuPDF and real local PaddleOCR adapter.
+- Deterministic Indian PII recognizers (Aadhaar with Verhoeff checksum, PAN, mobile phone, email, bank account, IFSC, passport, employee/gov ID).
+- Redaction review workspace in Next.js console with masked context preview.
+- Optimistic concurrency locking (version field) and bulk accept high-confidence findings.
+- Raw text stored in encrypted vault only; database contains only salted hashes and masked text.
+- Indexing remains strictly blocked until all redactions are approved.
 
 ## Milestone 3: masked hybrid RAG
 

@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from koshshield.models import DocumentRecord
+from koshshield.models import DocumentRecord, DocumentState
 from koshshield.security.file_validation import validate_document
 from koshshield.security.vault import EncryptedVault
 from koshshield.services.audit import append_audit_event
@@ -32,7 +32,7 @@ def accept_document(
             size_bytes=len(content),
             sha256=evidence_hash,
             vault_path=str(vault_path),
-            status="encrypted",
+            status=DocumentState.ENCRYPTED,
         )
         session.add(document)
         append_audit_event(

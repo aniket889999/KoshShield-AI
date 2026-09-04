@@ -4,40 +4,70 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   Archive,
+  Check,
   CheckCircle2,
   ChevronRight,
   CircleAlert,
+  CreditCard,
   Database,
+  Eye,
   FileCheck2,
+  FileCode,
   FileLock2,
   FileSearch,
+  FileText,
+  Fingerprint,
   Gauge,
   History,
   KeyRound,
+  Layers,
+  Loader2,
   LockKeyhole,
+  Mail,
   Menu,
   Network,
+  Phone,
+  ScanLine,
   Search,
   Server,
+  ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Upload,
   UserCheck,
   X,
 } from "lucide-react";
-import { useRef, useState, type ComponentType } from "react";
+import { useMemo, useRef, useState, type ComponentType } from "react";
 
 import {
+  acceptHighConfidenceRedactions,
+  approveRedactions,
   getAuditIntegrity,
+  getDocumentRedactions,
+  getReviewQueue,
   getSystemStatus,
   listAuditEvents,
   listDocuments,
+  startExtraction,
+  updateRedactionDecision,
   uploadDocument,
   type DependencyStatus,
+  type DocumentRecord,
+  type RedactionFinding,
 } from "@/lib/api";
-import { formatBytes, formatTime, shortHash } from "@/lib/format";
+import {
+  formatBytes,
+  formatConfidence,
+  formatFindingLabel,
+  formatStatusLabel,
+  formatTime,
+  shortHash,
+} from "@/lib/format";
 
-const navigation = [
-  { label: "Overview", icon: Gauge, active: true },
+type NavTab = "Overview" | "Documents" | "Review queue" | "Intelligence" | "Approvals" | "Audit trail";
+
+const navigation: { label: NavTab; icon: ComponentType<{ size?: number }> }[] = [
+  { label: "Overview", icon: Gauge },
   { label: "Documents", icon: FileLock2 },
   { label: "Review queue", icon: FileCheck2 },
   { label: "Intelligence", icon: FileSearch },
@@ -85,26 +115,69 @@ function ServiceTile({
   );
 }
 
+function FindingTypeIcon({ type }: { type: string }) {
+  switch (type.toUpperCase()) {
+    case "AADHAAR":
+      return <Fingerprint size={15} />;
+    case "PAN":
+      return <CreditCard size={15} />;
+    case "PHONE":
+      return <Phone size={15} />;
+    case "EMAIL":
+      return <Mail size={15} />;
+    case "BANK_ACCOUNT":
+    case "IFSC":
+      return <FileText size={15} />;
+    case "PASSPORT":
+    case "GOV_ID":
+      return <FileCode size={15} />;
+    default:
+      return <ShieldAlert size={15} />;
+  }
+}
+
 export function OperationsConsole() {
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [activeNav, setActiveNav] = useState<NavTab>("Overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
+  // Review workspace state
+  const [selectedReviewDocId, setSelectedReviewDocId] = useState<string | null>(null);
+  const [selectedPageNumber, setSelectedPageNumber] = useState<number>(1);
+  const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+
+  // Queries
   const statusQuery = useQuery({
     queryKey: ["system-status"],
     queryFn: getSystemStatus,
     refetchInterval: 10_000,
   });
   const documentsQuery = useQuery({ queryKey: ["documents"], queryFn: listDocuments });
+  const reviewQueueQuery = useQuery({
+    queryKey: ["review-queue"],
+    queryFn: getReviewQueue,
+    refetchInterval: 5_000,
+  });
   const auditQuery = useQuery({ queryKey: ["audit"], queryFn: listAuditEvents });
   const auditIntegrityQuery = useQuery({
     queryKey: ["audit-integrity"],
     queryFn: getAuditIntegrity,
   });
+
+  // Active review document redactions query
+  const redactionsQuery = useQuery({
+    queryKey: ["document-redactions", selectedReviewDocId],
+    queryFn: () => (selectedReviewDocId ? getDocumentRedactions(selectedReviewDocId) : null),
+    enabled: Boolean(selectedReviewDocId),
+  });
+
+  // Mutations
   const uploadMutation = useMutation({
     mutationFn: uploadDocument,
-    onSuccess: async () => {
+    onSuccess: async (doc) => {
       setSelectedFile(null);
       if (inputRef.current) inputRef.current.value = "";
       await Promise.all([
@@ -112,50 +185,182 @@ export function OperationsConsole() {
         queryClient.invalidateQueries({ queryKey: ["audit"] }),
         queryClient.invalidateQueries({ queryKey: ["audit-integrity"] }),
       ]);
+      setActionNotice(`Document "${doc.filename}" successfully encrypted in vault.`);
+    },
+  });
+
+  const extractMutation = useMutation({
+    mutationFn: (docId: string) => startExtraction(docId),
+    onSuccess: async (_, docId) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents"] }),
+        queryClient.invalidateQueries({ queryKey: ["review-queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["audit"] }),
+        queryClient.invalidateQueries({ queryKey: ["document-redactions", docId] }),
+      ]);
+      setSelectedReviewDocId(docId);
+      setActiveNav("Review queue");
+      setActionNotice("Extraction complete. Review detected Indian PII findings.");
+    },
+  });
+
+  const updateDecisionMutation = useMutation({
+    mutationFn: ({
+      docId,
+      findingId,
+      decision,
+      version,
+    }: {
+      docId: string;
+      findingId: string;
+      decision: "ACCEPTED" | "REJECTED";
+      version: number;
+    }) => updateRedactionDecision(docId, findingId, decision, version),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["document-redactions", selectedReviewDocId] }),
+        queryClient.invalidateQueries({ queryKey: ["review-queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["audit"] }),
+      ]);
+    },
+  });
+
+  const acceptHighConfidenceMutation = useMutation({
+    mutationFn: (docId: string) => acceptHighConfidenceRedactions(docId),
+    onSuccess: async (res) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["document-redactions", selectedReviewDocId] }),
+        queryClient.invalidateQueries({ queryKey: ["review-queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["audit"] }),
+      ]);
+      setActionNotice(`Accepted ${res.accepted_count} high-confidence finding(s).`);
+    },
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (docId: string) => approveRedactions(docId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["document-redactions", selectedReviewDocId] }),
+        queryClient.invalidateQueries({ queryKey: ["review-queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["documents"] }),
+        queryClient.invalidateQueries({ queryKey: ["audit"] }),
+      ]);
+      setActionNotice("Redactions approved. Document is marked INDEX_READY with deterministic masked text.");
     },
   });
 
   const system = statusQuery.data;
   const systemReady = system?.metadata_store.status === "ready";
   const documentCount = documentsQuery.data?.length ?? 0;
+  const reviewQueueCount = reviewQueueQuery.data?.filter((q) => q.status === "REVIEW_REQUIRED").length ?? 0;
+
+  // Active review item
+  const reviewQueueItems = useMemo(
+    () => reviewQueueQuery.data ?? [],
+    [reviewQueueQuery.data]
+  );
+  const currentReviewDoc = useMemo(() => {
+    if (!selectedReviewDocId) return reviewQueueItems[0] ?? null;
+    return reviewQueueItems.find((d) => d.document_id === selectedReviewDocId) ?? null;
+  }, [selectedReviewDocId, reviewQueueItems]);
+
+  const activeDocId = currentReviewDoc?.document_id ?? selectedReviewDocId;
+  const redactionsData = redactionsQuery.data;
+
+  // Filter findings for active page and category
+  const activeFindings = useMemo(() => {
+    if (!redactionsData) return [];
+    return redactionsData.findings.filter((f) => {
+      const pageMatches = f.page_number === selectedPageNumber;
+      const categoryMatches = categoryFilter === "ALL" || f.finding_type === categoryFilter;
+      return pageMatches && categoryMatches;
+    });
+  }, [redactionsData, selectedPageNumber, categoryFilter]);
+
+  // Distinct finding categories for the document
+  const categories = useMemo(() => {
+    if (!redactionsData) return [];
+    const set = new Set(redactionsData.findings.map((f) => f.finding_type));
+    return Array.from(set);
+  }, [redactionsData]);
+
+  const activePagePreview = useMemo(() => {
+    if (!redactionsData) return null;
+    return redactionsData.pages.find((p) => p.page_number === selectedPageNumber) ?? null;
+  }, [redactionsData, selectedPageNumber]);
 
   return (
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
         <div className="brand-lockup">
-          <div className="brand-mark"><ShieldCheck size={23} /></div>
+          <div className="brand-mark">
+            <ShieldCheck size={23} />
+          </div>
           <div>
             <strong>KoshShield AI</strong>
             <span>Sovereign workbench</span>
           </div>
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(false)} aria-label="Close navigation">
+          <button
+            className="icon-button mobile-only"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close navigation"
+          >
             <X size={19} />
           </button>
         </div>
 
         <nav aria-label="Primary navigation">
           <span className="nav-label">Workspace</span>
-          {navigation.map(({ label, icon: Icon, active }) => (
-            <button className={`nav-item ${active ? "nav-active" : ""}`} key={label}>
-              <Icon size={18} />
-              <span>{label}</span>
-              {active && <ChevronRight size={16} className="nav-arrow" />}
-            </button>
-          ))}
+          {navigation.map(({ label, icon: Icon }) => {
+            const isActive = activeNav === label;
+            return (
+              <button
+                className={`nav-item ${isActive ? "nav-active" : ""}`}
+                key={label}
+                onClick={() => {
+                  setActiveNav(label);
+                  setSidebarOpen(false);
+                }}
+              >
+                <Icon size={18} />
+                <span>{label}</span>
+                {label === "Review queue" && reviewQueueCount > 0 && (
+                  <span className="nav-badge">{reviewQueueCount}</span>
+                )}
+                {isActive && <ChevronRight size={16} className="nav-arrow" />}
+              </button>
+            );
+          })}
         </nav>
 
         <div className="boundary-panel">
-          <div><Network size={17} /><strong>Data boundary</strong></div>
-          <p>No external AI endpoints are permitted by configuration.</p>
-          <span><LockKeyhole size={14} /> Local-only processing</span>
+          <div>
+            <Network size={17} />
+            <strong>Data boundary</strong>
+          </div>
+          <p>No external AI endpoints or cloud models are permitted.</p>
+          <span>
+            <LockKeyhole size={14} /> Air-gapped / Local only
+          </span>
         </div>
       </aside>
 
-      {sidebarOpen && <button className="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-label="Close navigation overlay" />}
+      {sidebarOpen && (
+        <button
+          className="sidebar-scrim"
+          onClick={() => setSidebarOpen(false)}
+          aria-label="Close navigation overlay"
+        />
+      )}
 
       <main>
         <header className="topbar">
-          <button className="icon-button mobile-only" onClick={() => setSidebarOpen(true)} aria-label="Open navigation">
+          <button
+            className="icon-button mobile-only"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open navigation"
+          >
             <Menu size={20} />
           </button>
           <div className="search-shell">
@@ -165,139 +370,778 @@ export function OperationsConsole() {
           </div>
           <div className="topbar-status">
             <span className={`connection-dot ${systemReady ? "connection-ready" : ""}`} />
-            {statusQuery.isError ? "Backend offline" : systemReady ? "Local services connected" : "Checking services"}
+            {statusQuery.isError
+              ? "Backend offline"
+              : systemReady
+                ? "Local services connected"
+                : "Checking services"}
           </div>
-          <button className="profile-button" aria-label="Current user">AK</button>
+          <button className="profile-button" aria-label="Current user">
+            AK
+          </button>
         </header>
 
         <div className="workspace">
-          <section className="page-heading">
-            <div>
-              <span className="eyebrow">Secure operations</span>
-              <h1>Operations overview</h1>
-              <p>Inspect the local trust boundary and accept documents into encrypted storage.</p>
-            </div>
-            <div className="mode-chip"><ShieldCheck size={17} /> Air-gapped mode</div>
-          </section>
-
-          {statusQuery.isError && (
-            <div className="notice notice-error">
-              <CircleAlert size={20} />
-              <div><strong>Local API is unavailable</strong><span>Start the configured FastAPI service, then retry.</span></div>
-              <button onClick={() => statusQuery.refetch()}>Retry</button>
+          {actionNotice && (
+            <div className="notice notice-info">
+              <CheckCircle2 size={18} />
+              <span>{actionNotice}</span>
+              <button onClick={() => setActionNotice(null)}>Dismiss</button>
             </div>
           )}
 
-          {system && system.vault.status === "not_configured" && (
-            <div className="notice notice-warning">
-              <KeyRound size={20} />
-              <div><strong>Encrypted intake is locked</strong><span>Configure KOSHSHIELD_MASTER_KEY_BASE64 before uploading documents.</span></div>
-            </div>
-          )}
+          {/* ========================================================= */}
+          {/* OVERVIEW TAB */}
+          {/* ========================================================= */}
+          {activeNav === "Overview" && (
+            <>
+              <section className="page-heading">
+                <div>
+                  <span className="eyebrow">Secure operations</span>
+                  <h1>Operations overview</h1>
+                  <p>Inspect the local trust boundary, system services, and accept encrypted intake.</p>
+                </div>
+                <div className="mode-chip">
+                  <ShieldCheck size={17} /> Air-gapped mode
+                </div>
+              </section>
 
-          <section className="service-grid" aria-label="Local service status">
-            <ServiceTile icon={LockKeyhole} label="Processing boundary" detail="Local only" status={system ? "ready" : "unavailable"} />
-            <ServiceTile icon={Archive} label="Encrypted vault" detail="AES-256-GCM" status={system?.vault.status ?? "unavailable"} />
-            <ServiceTile icon={Database} label="Metadata store" detail={system?.metadata_backend ?? "Not connected"} status={system?.metadata_store.status ?? "unavailable"} />
-            <ServiceTile icon={Server} label="Local model" detail="Qwen3-VL-4B" status={system?.local_model.status ?? "unavailable"} />
-          </section>
+              {statusQuery.isError && (
+                <div className="notice notice-error">
+                  <CircleAlert size={20} />
+                  <div>
+                    <strong>Local API is unavailable</strong>
+                    <span>Start the configured FastAPI service, then retry.</span>
+                  </div>
+                  <button onClick={() => statusQuery.refetch()}>Retry</button>
+                </div>
+              )}
 
-          <div className="content-grid">
-            <section className="panel intake-panel">
-              <div className="panel-heading">
-                <div><span className="section-kicker">Document intake</span><h2>Accept into encrypted vault</h2></div>
-                <span className="supported-types">PDF · PNG · JPEG</span>
+              {system && system.vault.status === "not_configured" && (
+                <div className="notice notice-warning">
+                  <KeyRound size={20} />
+                  <div>
+                    <strong>Encrypted intake is locked</strong>
+                    <span>Configure KOSHSHIELD_MASTER_KEY_BASE64 before uploading documents.</span>
+                  </div>
+                </div>
+              )}
+
+              <section className="service-grid service-grid-5" aria-label="Local service status">
+                <ServiceTile
+                  icon={LockKeyhole}
+                  label="Processing boundary"
+                  detail="Local only"
+                  status={system ? "ready" : "unavailable"}
+                />
+                <ServiceTile
+                  icon={Archive}
+                  label="Encrypted vault"
+                  detail="AES-256-GCM"
+                  status={system?.vault.status ?? "unavailable"}
+                />
+                <ServiceTile
+                  icon={Database}
+                  label="Metadata store"
+                  detail={system?.metadata_backend ?? "Not connected"}
+                  status={system?.metadata_store.status ?? "unavailable"}
+                />
+                <ServiceTile
+                  icon={ScanLine}
+                  label="Local OCR"
+                  detail="PaddleOCR"
+                  status={system?.ocr.status ?? "unavailable"}
+                />
+                <ServiceTile
+                  icon={Server}
+                  label="Local model"
+                  detail="Qwen3-VL-4B"
+                  status={system?.local_model.status ?? "unavailable"}
+                />
+              </section>
+
+              <div className="content-grid">
+                <section className="panel intake-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <span className="section-kicker">Document intake</span>
+                      <h2>Accept into encrypted vault</h2>
+                    </div>
+                    <span className="supported-types">PDF · PNG · JPEG</span>
+                  </div>
+
+                  <label className={`upload-zone ${selectedFile ? "upload-selected" : ""}`}>
+                    <input
+                      ref={inputRef}
+                      type="file"
+                      accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
+                      onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+                    />
+                    <div className="upload-icon">
+                      <Upload size={24} />
+                    </div>
+                    {selectedFile ? (
+                      <div>
+                        <strong>{selectedFile.name}</strong>
+                        <span>{formatBytes(selectedFile.size)} · Ready for encrypted intake</span>
+                      </div>
+                    ) : (
+                      <div>
+                        <strong>Select a confidential document</strong>
+                        <span>Original bytes are encrypted before acceptance is recorded.</span>
+                      </div>
+                    )}
+                  </label>
+
+                  <div className="upload-actions">
+                    <div className="intake-proof">
+                      <ShieldCheck size={16} />
+                      <span>Signature validation · SHA-256 evidence hash · encrypted storage</span>
+                    </div>
+                    <button
+                      className="primary-button"
+                      disabled={!selectedFile || uploadMutation.isPending || system?.vault.status !== "ready"}
+                      onClick={() => selectedFile && uploadMutation.mutate(selectedFile)}
+                    >
+                      {uploadMutation.isPending ? "Encrypting…" : "Accept document"}
+                    </button>
+                  </div>
+                  {uploadMutation.isError && <p className="form-error">{uploadMutation.error.message}</p>}
+                  {uploadMutation.isSuccess && (
+                    <p className="form-success">
+                      <CheckCircle2 size={15} /> Document encrypted and audit event recorded.
+                    </p>
+                  )}
+                </section>
+
+                <section className="panel assurance-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <span className="section-kicker">Trust controls</span>
+                      <h2>Milestone 2 guarantees</h2>
+                    </div>
+                    <Activity size={19} />
+                  </div>
+                  <div className="assurance-list">
+                    <div>
+                      <ShieldCheck size={19} />
+                      <span>
+                        <strong>Air-gapped extraction</strong>
+                        <small>Native PDF parsing with PyMuPDF; no network calls.</small>
+                      </span>
+                    </div>
+                    <div>
+                      <FileLock2 size={19} />
+                      <span>
+                        <strong>Raw text in vault only</strong>
+                        <small>Unmasked extracted text is never stored in DB or logs.</small>
+                      </span>
+                    </div>
+                    <div>
+                      <UserCheck size={19} />
+                      <span>
+                        <strong>Human redaction review</strong>
+                        <small>Indexing is blocked until all PII findings are resolved.</small>
+                      </span>
+                    </div>
+                    <div>
+                      <History size={19} />
+                      <span>
+                        <strong>Chained audit trail</strong>
+                        <small>Every state transition and redaction decision is cryptographically chained.</small>
+                      </span>
+                    </div>
+                  </div>
+                </section>
               </div>
 
-              <label className={`upload-zone ${selectedFile ? "upload-selected" : ""}`}>
-                <input
-                  ref={inputRef}
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
-                  onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
-                />
-                <div className="upload-icon"><Upload size={24} /></div>
-                {selectedFile ? (
-                  <div><strong>{selectedFile.name}</strong><span>{formatBytes(selectedFile.size)} · Ready for encrypted intake</span></div>
-                ) : (
-                  <div><strong>Select a confidential document</strong><span>Original bytes are encrypted before acceptance is recorded.</span></div>
-                )}
-              </label>
+              <div className="content-grid lower-grid">
+                <section className="panel documents-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <span className="section-kicker">Recent intake</span>
+                      <h2>Vault documents</h2>
+                    </div>
+                    <button
+                      className="text-button"
+                      onClick={() => setActiveNav("Documents")}
+                    >
+                      View all ({documentCount})
+                    </button>
+                  </div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Document</th>
+                          <th>Status</th>
+                          <th>Evidence hash</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {documentsQuery.data?.slice(0, 5).map((document) => (
+                          <tr key={document.id}>
+                            <td>
+                              <span className="document-cell">
+                                <FileLock2 size={17} />
+                                <span>
+                                  <strong>{document.filename}</strong>
+                                  <small>{formatBytes(document.size_bytes)}</small>
+                                </span>
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`doc-status-badge status-tag-${document.status.toLowerCase()}`}>
+                                {formatStatusLabel(document.status)}
+                              </span>
+                            </td>
+                            <td>
+                              <code>{shortHash(document.sha256)}</code>
+                            </td>
+                            <td>
+                              {document.status === "ENCRYPTED" && (
+                                <button
+                                  className="action-button-small"
+                                  disabled={extractMutation.isPending}
+                                  onClick={() => extractMutation.mutate(document.id)}
+                                >
+                                  {extractMutation.isPending ? "Extracting…" : "Extract PII"}
+                                </button>
+                              )}
+                              {document.status === "REVIEW_REQUIRED" && (
+                                <button
+                                  className="action-button-primary-small"
+                                  onClick={() => {
+                                    setSelectedReviewDocId(document.id);
+                                    setActiveNav("Review queue");
+                                  }}
+                                >
+                                  Review findings
+                                </button>
+                              )}
+                              {document.status === "INDEX_READY" && (
+                                <span className="label-index-ready">
+                                  <Check size={13} /> Ready
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {!documentsQuery.data?.length && (
+                          <tr>
+                            <td colSpan={4} className="empty-cell">
+                              No documents have entered the encrypted vault.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
 
-              <div className="upload-actions">
-                <div className="intake-proof"><ShieldCheck size={16} /><span>Signature validation · SHA-256 evidence hash · encrypted storage</span></div>
+                <section className="panel audit-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <span className="section-kicker">Audit snapshot</span>
+                      <h2>Latest events</h2>
+                    </div>
+                    <StatusBadge
+                      status={auditIntegrityQuery.data?.valid ? "ready" : "unavailable"}
+                    />
+                  </div>
+                  <div className="audit-list">
+                    {auditQuery.data?.map((event) => (
+                      <div className="audit-row" key={event.id}>
+                        <div className="audit-icon">
+                          <FileCheck2 size={16} />
+                        </div>
+                        <span>
+                          <strong>{event.event_type.replace(/[._]/g, " ")}</strong>
+                          <small>
+                            {event.actor_id} · {formatTime(event.created_at)}
+                          </small>
+                        </span>
+                        <code>{event.event_hash.slice(0, 7)}</code>
+                      </div>
+                    ))}
+                    {!auditQuery.data?.length && (
+                      <p className="empty-audit">Audit events appear after a secured action.</p>
+                    )}
+                  </div>
+                </section>
+              </div>
+            </>
+          )}
+
+          {/* ========================================================= */}
+          {/* DOCUMENTS TAB */}
+          {/* ========================================================= */}
+          {activeNav === "Documents" && (
+            <>
+              <section className="page-heading">
+                <div>
+                  <span className="eyebrow">Document inventory</span>
+                  <h1>Vault documents</h1>
+                  <p>All files stored in the AES-256-GCM encrypted vault with explicit processing states.</p>
+                </div>
                 <button
                   className="primary-button"
-                  disabled={!selectedFile || uploadMutation.isPending || system?.vault.status !== "ready"}
-                  onClick={() => selectedFile && uploadMutation.mutate(selectedFile)}
+                  onClick={() => setActiveNav("Overview")}
                 >
-                  {uploadMutation.isPending ? "Encrypting…" : "Accept document"}
+                  <Upload size={14} style={{ marginRight: 6 }} /> Intake new document
                 </button>
-              </div>
-              {uploadMutation.isError && <p className="form-error">{uploadMutation.error.message}</p>}
-              {uploadMutation.isSuccess && <p className="form-success"><CheckCircle2 size={15} /> Document encrypted and audit event recorded.</p>}
-            </section>
+              </section>
 
-            <section className="panel assurance-panel">
-              <div className="panel-heading">
-                <div><span className="section-kicker">Trust controls</span><h2>Current guarantees</h2></div>
-                <Activity size={19} />
-              </div>
-              <div className="assurance-list">
-                <div><ShieldCheck size={19} /><span><strong>External AI disabled</strong><small>Runtime configuration rejects public service URLs.</small></span></div>
-                <div><FileLock2 size={19} /><span><strong>Originals encrypted first</strong><small>Plain document bytes are never written to application storage.</small></span></div>
-                <div><History size={19} /><span><strong>Evidence is chained</strong><small>Each audit event includes the previous event hash.</small></span></div>
-              </div>
-            </section>
-          </div>
-
-          <div className="content-grid lower-grid">
-            <section className="panel documents-panel">
-              <div className="panel-heading">
-                <div><span className="section-kicker">Recent intake</span><h2>Encrypted documents</h2></div>
-                <span className="record-count">
-                  {documentCount} {documentCount === 1 ? "record" : "records"}
-                </span>
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Document</th><th>Status</th><th>Evidence hash</th><th>Accepted</th></tr></thead>
-                  <tbody>
-                    {documentsQuery.data?.map((document) => (
-                      <tr key={document.id}>
-                        <td><span className="document-cell"><FileLock2 size={17} /><span><strong>{document.filename}</strong><small>{formatBytes(document.size_bytes)}</small></span></span></td>
-                        <td><span className="encrypted-label"><LockKeyhole size={13} /> Encrypted</span></td>
-                        <td><code>{shortHash(document.sha256)}</code></td>
-                        <td>{formatTime(document.created_at)}</td>
-                      </tr>
-                    ))}
-                    {!documentsQuery.data?.length && (
-                      <tr><td colSpan={4} className="empty-cell">No documents have entered the encrypted vault.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section className="panel audit-panel">
-              <div className="panel-heading">
-                <div><span className="section-kicker">Audit snapshot</span><h2>Latest events</h2></div>
-                <StatusBadge
-                  status={auditIntegrityQuery.data?.valid ? "ready" : "unavailable"}
-                />
-              </div>
-              <div className="audit-list">
-                {auditQuery.data?.map((event) => (
-                  <div className="audit-row" key={event.id}>
-                    <div className="audit-icon"><FileCheck2 size={16} /></div>
-                    <span><strong>{event.event_type.replace(".", " ")}</strong><small>{event.actor_id} · {formatTime(event.created_at)}</small></span>
-                    <code>{event.event_hash.slice(0, 7)}</code>
+              <section className="panel">
+                <div className="panel-heading">
+                  <div>
+                    <span className="section-kicker">State ledger</span>
+                    <h2>All vault records ({documentCount})</h2>
                   </div>
-                ))}
-                {!auditQuery.data?.length && <p className="empty-audit">Audit events appear after a secured action.</p>}
+                  <span className="supported-types">Local encrypted store</span>
+                </div>
+
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Document</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Evidence hash</th>
+                        <th>Intake timestamp</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {documentsQuery.data?.map((doc: DocumentRecord) => (
+                        <tr key={doc.id}>
+                          <td>
+                            <span className="document-cell">
+                              <FileLock2 size={18} />
+                              <span>
+                                <strong>{doc.filename}</strong>
+                                <small>{formatBytes(doc.size_bytes)}</small>
+                              </span>
+                            </span>
+                          </td>
+                          <td>
+                            <span className="type-tag">{doc.media_type.split("/")[1]?.toUpperCase() ?? "PDF"}</span>
+                          </td>
+                          <td>
+                            <span className={`doc-status-badge status-tag-${doc.status.toLowerCase()}`}>
+                              {formatStatusLabel(doc.status)}
+                            </span>
+                          </td>
+                          <td>
+                            <code>{shortHash(doc.sha256)}</code>
+                          </td>
+                          <td>{formatTime(doc.created_at)}</td>
+                          <td>
+                            {doc.status === "ENCRYPTED" && (
+                              <button
+                                className="action-button-small"
+                                disabled={extractMutation.isPending}
+                                onClick={() => extractMutation.mutate(doc.id)}
+                              >
+                                {extractMutation.isPending ? "Extracting…" : "Extract PII"}
+                              </button>
+                            )}
+                            {doc.status === "EXTRACTION_FAILED" && (
+                              <button
+                                className="action-button-small"
+                                disabled={extractMutation.isPending}
+                                onClick={() => extractMutation.mutate(doc.id)}
+                              >
+                                Retry extraction
+                              </button>
+                            )}
+                            {doc.status === "REVIEW_REQUIRED" && (
+                              <button
+                                className="action-button-primary-small"
+                                onClick={() => {
+                                  setSelectedReviewDocId(doc.id);
+                                  setActiveNav("Review queue");
+                                }}
+                              >
+                                Review findings
+                              </button>
+                            )}
+                            {doc.status === "INDEX_READY" && (
+                              <button
+                                className="action-button-outline-small"
+                                onClick={() => {
+                                  setSelectedReviewDocId(doc.id);
+                                  setActiveNav("Review queue");
+                                }}
+                              >
+                                <Eye size={12} style={{ marginRight: 4 }} /> View masked
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                      {!documentsQuery.data?.length && (
+                        <tr>
+                          <td colSpan={6} className="empty-cell">
+                            No documents in vault yet. Use Document Intake on the Overview tab.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </>
+          )}
+
+          {/* ========================================================= */}
+          {/* REVIEW QUEUE TAB */}
+          {/* ========================================================= */}
+          {activeNav === "Review queue" && (
+            <div className="review-workspace">
+              <section className="page-heading">
+                <div>
+                  <span className="eyebrow">Human-in-the-loop</span>
+                  <h1>Redaction review workspace</h1>
+                  <p>Inspect detected Indian PII findings, accept or reject redactions, and finalize privacy masking.</p>
+                </div>
+                <div className="review-header-stats">
+                  {currentReviewDoc && (
+                    <span className={`doc-status-badge status-tag-${currentReviewDoc.status.toLowerCase()}`}>
+                      {formatStatusLabel(currentReviewDoc.status)}
+                    </span>
+                  )}
+                </div>
+              </section>
+
+              {/* Document selection bar */}
+              <div className="review-doc-bar">
+                <span className="doc-bar-label">Document:</span>
+                <div className="doc-pills">
+                  {reviewQueueItems.map((item) => (
+                    <button
+                      key={item.document_id}
+                      className={`doc-pill ${item.document_id === activeDocId ? "doc-pill-active" : ""}`}
+                      onClick={() => {
+                        setSelectedReviewDocId(item.document_id);
+                        setSelectedPageNumber(1);
+                        setCategoryFilter("ALL");
+                      }}
+                    >
+                      <FileText size={14} />
+                      <span>{item.filename}</span>
+                      {item.pending_findings > 0 && (
+                        <span className="pill-badge">{item.pending_findings} pending</span>
+                      )}
+                    </button>
+                  ))}
+                  {!reviewQueueItems.length && (
+                    <span className="empty-queue-note">
+                      No documents currently require review. Extract a document from the Documents tab.
+                    </span>
+                  )}
+                </div>
               </div>
+
+              {activeDocId && redactionsData && (
+                <>
+                  {/* Summary Bar */}
+                  <div className="review-stats-grid">
+                    <div className="stat-card">
+                      <span className="stat-label">Total findings</span>
+                      <strong className="stat-value">{redactionsData.total_findings}</strong>
+                    </div>
+                    <div className="stat-card stat-pending">
+                      <span className="stat-label">Pending review</span>
+                      <strong className="stat-value">{redactionsData.unresolved_count}</strong>
+                    </div>
+                    <div className="stat-card stat-accepted">
+                      <span className="stat-label">Accepted</span>
+                      <strong className="stat-value">
+                        {redactionsData.findings.filter((f) => f.status === "ACCEPTED").length}
+                      </strong>
+                    </div>
+                    <div className="stat-card stat-rejected">
+                      <span className="stat-label">Rejected</span>
+                      <strong className="stat-value">
+                        {redactionsData.findings.filter((f) => f.status === "REJECTED").length}
+                      </strong>
+                    </div>
+                    <div className="stat-card">
+                      <span className="stat-label">Pages</span>
+                      <strong className="stat-value">{redactionsData.total_pages}</strong>
+                    </div>
+                  </div>
+
+                  {/* Page selector bar */}
+                  {redactionsData.total_pages > 1 && (
+                    <div className="page-bar">
+                      <span className="page-bar-label">Pages:</span>
+                      <div className="page-tabs">
+                        {Array.from({ length: redactionsData.total_pages }, (_, i) => i + 1).map((pg) => {
+                          const pageFindingsCount = redactionsData.findings.filter((f) => f.page_number === pg).length;
+                          return (
+                            <button
+                              key={pg}
+                              className={`page-tab ${pg === selectedPageNumber ? "page-tab-active" : ""}`}
+                              onClick={() => setSelectedPageNumber(pg)}
+                            >
+                              Page {pg}
+                              {pageFindingsCount > 0 && <span className="tab-pill">{pageFindingsCount}</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Dual pane workspace */}
+                  <div className="workspace-dual-pane">
+                    {/* Left: Masked text preview */}
+                    <div className="preview-pane panel">
+                      <div className="panel-heading">
+                        <div>
+                          <span className="section-kicker">Page {selectedPageNumber} preview</span>
+                          <h2>Masked text output</h2>
+                        </div>
+                        <span className="extraction-method-tag">
+                          <Layers size={13} style={{ marginRight: 4 }} />
+                          {activePagePreview?.extraction_method === "native_pdf"
+                            ? "Native PDF (PyMuPDF)"
+                            : activePagePreview?.extraction_method ?? "Extracted"}
+                        </span>
+                      </div>
+
+                      <div className="preview-text-box">
+                        {activePagePreview?.masked_text ? (
+                          <pre className="masked-pre">{activePagePreview.masked_text}</pre>
+                        ) : (
+                          <div className="masked-context-stream">
+                            <p className="stream-caption">
+                              Privacy preview with active redaction placeholders:
+                            </p>
+                            {activeFindings.length > 0 ? (
+                              <div className="context-snippets-list">
+                                {activeFindings.map((f) => (
+                                  <div className="snippet-row" key={f.id}>
+                                    <span className="snippet-type">{formatFindingLabel(f.finding_type)}</span>
+                                    <code className="snippet-code">{f.masked_context}</code>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="no-findings-page">No findings on page {selectedPageNumber}.</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="preview-footer-note">
+                        <LockKeyhole size={13} />
+                        <span>Raw original text remains encrypted in vault; only masked content is shown.</span>
+                      </div>
+                    </div>
+
+                    {/* Right: Findings list & review actions */}
+                    <div className="findings-pane panel">
+                      <div className="panel-heading">
+                        <div>
+                          <span className="section-kicker">PII Detections</span>
+                          <h2>Findings ({activeFindings.length})</h2>
+                        </div>
+                        {redactionsData.status === "REVIEW_REQUIRED" && (
+                          <button
+                            className="bulk-accept-button"
+                            disabled={acceptHighConfidenceMutation.isPending}
+                            onClick={() => acceptHighConfidenceMutation.mutate(activeDocId)}
+                            title="Accept all findings with ≥85% confidence"
+                          >
+                            <Sparkles size={14} />
+                            <span>Accept high-confidence</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Category filters */}
+                      {categories.length > 1 && (
+                        <div className="category-chips">
+                          <button
+                            className={`chip ${categoryFilter === "ALL" ? "chip-active" : ""}`}
+                            onClick={() => setCategoryFilter("ALL")}
+                          >
+                            All
+                          </button>
+                          {categories.map((cat) => (
+                            <button
+                              key={cat}
+                              className={`chip ${categoryFilter === cat ? "chip-active" : ""}`}
+                              onClick={() => setCategoryFilter(cat)}
+                            >
+                              {cat}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Findings cards */}
+                      <div className="findings-list">
+                        {activeFindings.map((finding: RedactionFinding) => (
+                          <div
+                            key={finding.id}
+                            className={`finding-card finding-${finding.status.toLowerCase()}`}
+                          >
+                            <div className="finding-header">
+                              <div className="finding-title">
+                                <FindingTypeIcon type={finding.finding_type} />
+                                <strong>{formatFindingLabel(finding.finding_type)}</strong>
+                              </div>
+                              <div className="finding-meta">
+                                <span className="confidence-chip">
+                                  {formatConfidence(finding.confidence)} confidence
+                                </span>
+                                <span className={`decision-badge decision-${finding.status.toLowerCase()}`}>
+                                  {finding.status}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="context-box">
+                              <code>{finding.masked_context}</code>
+                            </div>
+
+                            <div className="finding-footer">
+                              <span className="source-tag">{finding.detection_source}</span>
+
+                              {redactionsData.status === "REVIEW_REQUIRED" && (
+                                <div className="decision-actions">
+                                  <button
+                                    className={`btn-accept ${finding.status === "ACCEPTED" ? "btn-active" : ""}`}
+                                    disabled={updateDecisionMutation.isPending}
+                                    onClick={() =>
+                                      updateDecisionMutation.mutate({
+                                        docId: activeDocId,
+                                        findingId: finding.id,
+                                        decision: "ACCEPTED",
+                                        version: finding.version,
+                                      })
+                                    }
+                                  >
+                                    <Check size={13} /> Accept
+                                  </button>
+                                  <button
+                                    className={`btn-reject ${finding.status === "REJECTED" ? "btn-active" : ""}`}
+                                    disabled={updateDecisionMutation.isPending}
+                                    onClick={() =>
+                                      updateDecisionMutation.mutate({
+                                        docId: activeDocId,
+                                        findingId: finding.id,
+                                        decision: "REJECTED",
+                                        version: finding.version,
+                                      })
+                                    }
+                                  >
+                                    <X size={13} /> Reject
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+
+                        {!activeFindings.length && (
+                          <div className="empty-findings">
+                            <CheckCircle2 size={24} style={{ color: "var(--green-700)" }} />
+                            <strong>No findings to review</strong>
+                            <span>No detections matching the current filters on this page.</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Approval action banner */}
+                  <div className="approval-banner panel">
+                    <div className="approval-status-info">
+                      {redactionsData.unresolved_count > 0 ? (
+                        <div className="unresolved-warning">
+                          <CircleAlert size={20} />
+                          <div>
+                            <strong>
+                              {redactionsData.unresolved_count} unresolved finding(s) require human decision
+                            </strong>
+                            <span>
+                              All findings must be accepted or rejected before privacy redaction can be approved.
+                            </span>
+                          </div>
+                        </div>
+                      ) : redactionsData.status === "REVIEW_REQUIRED" ? (
+                        <div className="resolved-ready">
+                          <CheckCircle2 size={20} />
+                          <div>
+                            <strong>All findings resolved</strong>
+                            <span>
+                              Ready to finalize redactions, produce deterministic masked text, and mark INDEX_READY.
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="resolved-ready">
+                          <CheckCircle2 size={20} />
+                          <div>
+                            <strong>Document is INDEX_READY</strong>
+                            <span>Masked copy generated and approved. Ready for local indexing in Milestone 3.</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {redactionsData.status === "REVIEW_REQUIRED" && (
+                      <button
+                        className="approve-primary-button"
+                        disabled={redactionsData.unresolved_count > 0 || approveMutation.isPending}
+                        onClick={() => approveMutation.mutate(activeDocId)}
+                      >
+                        {approveMutation.isPending ? (
+                          <>
+                            <Loader2 size={16} className="spin-loader" /> Finalizing…
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 size={16} style={{ marginRight: 6 }} /> Approve redactions & Mark INDEX_READY
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Fallback for other tabs */}
+          {(activeNav === "Intelligence" || activeNav === "Approvals" || activeNav === "Audit trail") && (
+            <section className="panel placeholder-panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="section-kicker">Roadmap boundary</span>
+                  <h2>{activeNav}</h2>
+                </div>
+              </div>
+              <p className="placeholder-text">
+                {activeNav === "Intelligence" &&
+                  "Masked Qdrant vector retrieval and multimodal hybrid RAG are scheduled for Milestone 3."}
+                {activeNav === "Approvals" &&
+                  "Policy-gated agent tools and Docker sandbox approvals are scheduled for Milestone 5."}
+                {activeNav === "Audit trail" &&
+                  "Full audit chain inspection dashboard is scheduled for Milestone 7; recent audit events are available on Overview."}
+              </p>
+              <button className="primary-button" onClick={() => setActiveNav("Overview")}>
+                Return to Overview
+              </button>
             </section>
-          </div>
+          )}
         </div>
       </main>
     </div>

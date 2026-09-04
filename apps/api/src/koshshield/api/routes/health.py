@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from koshshield.config import Settings, get_settings
 from koshshield.database import get_db
+from koshshield.services.extraction.paddle_ocr import PaddleOcrAdapter
 
 router = APIRouter()
 SessionDependency = Annotated[Session, Depends(get_db)]
@@ -30,6 +31,7 @@ class SystemStatus(BaseModel):
     metadata_store: DependencyState
     vector_store: DependencyState
     local_model: DependencyState
+    ocr: DependencyState
 
 
 async def probe(endpoint: str) -> DependencyState:
@@ -71,6 +73,19 @@ async def system_status(
         if settings.database_url.startswith(("postgresql://", "postgresql+"))
         else "SQLite development"
     )
+    ocr_adapter = PaddleOcrAdapter(
+        det_model_dir=settings.ocr_det_model_dir,
+        rec_model_dir=settings.ocr_rec_model_dir,
+        cls_model_dir=settings.ocr_cls_model_dir,
+    )
+    ocr_ready, ocr_reason = ocr_adapter.is_available()
+    ocr_status: Literal["ready", "unavailable", "not_configured"] = (
+        "ready"
+        if ocr_ready
+        else "not_configured"
+        if not settings.ocr_det_model_dir
+        else "unavailable"
+    )
     return SystemStatus(
         application=settings.app_name,
         environment=settings.environment,
@@ -81,4 +96,5 @@ async def system_status(
         metadata_store=DependencyState(status="ready"),
         vector_store=qdrant,
         local_model=model,
+        ocr=DependencyState(status=ocr_status, endpoint=ocr_reason),
     )

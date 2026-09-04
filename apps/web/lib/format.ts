@@ -16,3 +16,51 @@ export function formatTime(value: string): string {
     minute: "2-digit",
   }).format(new Date(value));
 }
+
+export function formatConfidence(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+export function formatFindingLabel(type: string): string {
+  switch (type.toUpperCase()) {
+    case "AADHAAR":
+      return "Aadhaar number";
+    case "PAN":
+      return "PAN card";
+    case "PHONE":
+      return "Mobile number";
+    case "EMAIL":
+      return "Email address";
+    case "BANK_ACCOUNT":
+      return "Bank account";
+    case "IFSC":
+      return "IFSC code";
+    case "PASSPORT":
+      return "Passport number";
+    case "GOV_ID":
+      return "Government / Employee ID";
+    default:
+      return type.replace(/_/g, " ").toLowerCase();
+  }
+}
+
+export function formatStatusLabel(status: string): string {
+  switch (status.toUpperCase()) {
+    case "ENCRYPTED":
+      return "Encrypted";
+    case "EXTRACTION_QUEUED":
+      return "Extraction queued";
+    case "EXTRACTING":
+      return "Extracting…";
+    case "REVIEW_REQUIRED":
+      return "Review required";
+    case "REDACTION_APPROVED":
+      return "Redaction approved";
+    case "INDEX_READY":
+      return "Index ready";
+    case "EXTRACTION_FAILED":
+      return "Extraction failed";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}

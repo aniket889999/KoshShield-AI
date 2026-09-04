@@ -32,10 +32,12 @@ The implementation plan and architecture boundaries are documented in
 
 ## Development status
 
-Milestone 1 is implemented: local health checks, secure document intake,
-AES-256-GCM encrypted original storage, a hash-chained audit trail, an
-operational dashboard, and baseline tests. OCR, PII review, and masked indexing
-are the next milestone.
+Milestone 2 is implemented: air-gapped document extraction (PyMuPDF native text
+with real local PaddleOCR fallback), deterministic Indian PII recognition (Aadhaar
+with Verhoeff checksum, PAN, phone, email, bank accounts, IFSC, passport, government
+IDs), encrypted vault artifact storage, and a human-in-the-loop redaction review
+workspace in the Next.js console. Indexing is strictly gated behind human
+redaction approval. Masked BGE-M3/Qdrant retrieval is the next milestone.
 
 ## Local quick start
 

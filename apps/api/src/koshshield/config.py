@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     auto_create_schema: bool = True
     max_upload_bytes: int = Field(default=25 * 1024 * 1024, ge=1, le=100 * 1024 * 1024)
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    ocr_det_model_dir: Path | None = None
+    ocr_rec_model_dir: Path | None = None
+    ocr_cls_model_dir: Path | None = None
+    pii_salt: str = "koshshield-default-dev-salt"
+    max_extraction_pages: int = Field(default=50, ge=1, le=500)
+    max_extracted_text_bytes: int = Field(default=5 * 1024 * 1024, ge=1024)
+    max_image_dimension: int = Field(default=4096, ge=256)
+    high_confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
     @field_validator("qdrant_url", "llama_base_url")
     @classmethod

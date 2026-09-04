@@ -15,6 +15,7 @@ export interface SystemStatus {
   metadata_store: DependencyState;
   vector_store: DependencyState;
   local_model: DependencyState;
+  ocr: DependencyState;
 }
 
 export interface DocumentRecord {
@@ -24,6 +25,69 @@ export interface DocumentRecord {
   size_bytes: number;
   sha256: string;
   status: string;
+  version?: number;
+  created_at: string;
+}
+
+export interface ExtractionJob {
+  id: string;
+  document_id: string;
+  status: string;
+  pages_processed: number;
+  total_pages: number;
+  extraction_method?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface RedactionFinding {
+  id: string;
+  document_id: string;
+  page_number: number;
+  finding_type: string;
+  confidence: number;
+  detection_source: string;
+  start_offset: number;
+  end_offset: number;
+  bbox_json?: { bbox?: [number, number, number, number] } | null;
+  salted_value_hash: string;
+  masked_context: string;
+  status: "PENDING" | "ACCEPTED" | "REJECTED";
+  reviewer_id?: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentPagePreview {
+  page_number: number;
+  width: number;
+  height: number;
+  extraction_method: string;
+  masked_text?: string | null;
+  findings: RedactionFinding[];
+}
+
+export interface DocumentRedactions {
+  document_id: string;
+  status: string;
+  total_pages: number;
+  total_findings: number;
+  unresolved_count: number;
+  findings: RedactionFinding[];
+  pages: DocumentPagePreview[];
+}
+
+export interface ReviewQueueItem {
+  document_id: string;
+  filename: string;
+  status: string;
+  total_pages: number;
+  total_findings: number;
+  pending_findings: number;
+  accepted_findings: number;
+  rejected_findings: number;
   created_at: string;
 }
 
@@ -82,5 +146,57 @@ export function uploadDocument(file: File) {
     method: "POST",
     headers: { "X-Actor-ID": "local-demo-user" },
     body: form,
+  });
+}
+
+export function startExtraction(documentId: string) {
+  return request<ExtractionJob>(`/documents/${documentId}/extraction`, {
+    method: "POST",
+    headers: { "X-Actor-ID": "local-demo-user" },
+  });
+}
+
+export function getExtractionStatus(documentId: string) {
+  return request<ExtractionJob>(`/documents/${documentId}/extraction`);
+}
+
+export function getReviewQueue() {
+  return request<ReviewQueueItem[]>("/review");
+}
+
+export function getDocumentRedactions(documentId: string) {
+  return request<DocumentRedactions>(`/documents/${documentId}/redactions`);
+}
+
+export function updateRedactionDecision(
+  documentId: string,
+  findingId: string,
+  decision: "ACCEPTED" | "REJECTED",
+  version: number
+) {
+  return request<RedactionFinding>(`/documents/${documentId}/redactions/${findingId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Actor-ID": "local-demo-user",
+    },
+    body: JSON.stringify({ decision, version }),
+  });
+}
+
+export function acceptHighConfidenceRedactions(documentId: string) {
+  return request<{ accepted_count: number }>(
+    `/documents/${documentId}/redactions/accept-high-confidence`,
+    {
+      method: "POST",
+      headers: { "X-Actor-ID": "local-demo-user" },
+    }
+  );
+}
+
+export function approveRedactions(documentId: string) {
+  return request<DocumentRecord>(`/documents/${documentId}/redactions/approve`, {
+    method: "POST",
+    headers: { "X-Actor-ID": "local-demo-user" },
   });
 }
