@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     max_extracted_text_bytes: int = Field(default=5 * 1024 * 1024, ge=1024)
     max_image_dimension: int = Field(default=4096, ge=256)
     high_confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    embedding_model_dir: Path | None = None
+    embedding_device: str = "cpu"
+    embedding_batch_size: int = Field(default=16, ge=1, le=128)
+    qdrant_collection: str = "koshshield_masked_docs"
+    retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
+    max_search_top_k: int = Field(default=50, ge=1, le=100)
 
     @field_validator("qdrant_url", "llama_base_url")
     @classmethod

@@ -80,6 +80,9 @@ def append_audit_event(
     return event
 
 
+record_audit_event = append_audit_event
+
+
 def verify_audit_chain(session: Session) -> tuple[bool, list[AuditEvent], str | None]:
     events = list(session.scalars(select(AuditEvent).order_by(AuditEvent.created_at.asc())))
     expected_previous_hash: str | None = None

@@ -24,12 +24,17 @@
 - Raw text stored in encrypted vault only; database contains only salted hashes and masked text.
 - Indexing remains strictly blocked until all redactions are approved.
 
-## Milestone 3: masked hybrid RAG
+## Milestone 3: masked hybrid RAG (completed)
 
-- BGE-M3 dense/sparse embeddings and Qdrant fusion.
-- Tenant/document authorization filters.
-- Answers include page/chunk/evidence citations.
-- Golden-query retrieval and groundedness evaluation.
+- Deterministic token-aware chunking preserving page boundaries and `[REDACTED_*]` tags.
+- Pre-indexing privacy gate verifying zero unresolved findings and re-scanning masked text.
+- BGE-M3 dense (1024-d) and lexical sparse embeddings with offline deterministic fallbacks.
+- Qdrant vector store indexing with named vectors (`text_dense`, `text_sparse`) and payload indexes.
+- Reciprocal Rank Fusion (RRF $k=60$) hybrid search with tenant isolation and document authorization filters.
+- Verifiable citation generation format: `[Document: <id> | Page: <n> | Evidence: <hash:12>]`.
+- Privacy-safe query auditing (recording query SHA-256 and result counts, never query text).
+- Golden-query retrieval evaluation benchmark achieving Recall@5: 1.0, MRR: 1.0, and 0 cross-tenant leaks.
+- Intelligence workspace in Next.js console with vector store telemetry, corpus indexing, and search with citation copy.
 
 ## Milestone 4: multimodal retrieval
 

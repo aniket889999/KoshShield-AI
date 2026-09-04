@@ -58,6 +58,12 @@ export function formatStatusLabel(status: string): string {
       return "Redaction approved";
     case "INDEX_READY":
       return "Index ready";
+    case "INDEXING":
+      return "Indexing…";
+    case "INDEXED":
+      return "Indexed";
+    case "INDEX_FAILED":
+      return "Index failed";
     case "EXTRACTION_FAILED":
       return "Extraction failed";
     default:

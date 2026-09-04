@@ -4,10 +4,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   Archive,
+  BookOpen,
   Check,
   CheckCircle2,
   ChevronRight,
   CircleAlert,
+  Copy,
+  Cpu,
   CreditCard,
   Database,
   Eye,
@@ -44,10 +47,13 @@ import {
   approveRedactions,
   getAuditIntegrity,
   getDocumentRedactions,
+  getRetrievalStatus,
   getReviewQueue,
   getSystemStatus,
+  indexDocument,
   listAuditEvents,
   listDocuments,
+  searchRetrieval,
   startExtraction,
   updateRedactionDecision,
   uploadDocument,
@@ -55,6 +61,8 @@ import {
   type DocumentRecord,
   type RedactionFinding,
 } from "@/lib/api";
+
+
 import {
   formatBytes,
   formatConfidence,
@@ -249,6 +257,58 @@ export function OperationsConsole() {
       setActionNotice("Redactions approved. Document is marked INDEX_READY with deterministic masked text.");
     },
   });
+
+  // Intelligence state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchTopK, setSearchTopK] = useState(5);
+  const [searchDocFilter, setSearchDocFilter] = useState("all");
+  const [selectedIndexDocId, setSelectedIndexDocId] = useState("");
+  const [copiedCitation, setCopiedCitation] = useState<string | null>(null);
+
+  const retrievalStatusQuery = useQuery({
+    queryKey: ["retrieval-status"],
+    queryFn: getRetrievalStatus,
+    refetchInterval: 5000,
+  });
+
+  const indexMutation = useMutation({
+    mutationFn: (docId: string) => indexDocument(docId),
+    onSuccess: async (data) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["retrieval-status"] }),
+        queryClient.invalidateQueries({ queryKey: ["documents"] }),
+        queryClient.invalidateQueries({ queryKey: ["audit"] }),
+      ]);
+      setActionNotice(`Document indexed into Qdrant (${data.chunk_count} chunks generated).`);
+    },
+  });
+
+  const searchMutation = useMutation({
+    mutationFn: (params: {
+      query: string;
+      top_k: number;
+      permitted_document_ids?: string[];
+    }) => searchRetrieval(params),
+  });
+
+  const handleCopyCitation = (citation: string) => {
+    navigator.clipboard.writeText(citation);
+    setCopiedCitation(citation);
+    setTimeout(() => setCopiedCitation(null), 2500);
+  };
+
+  const handleSearchSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!searchQuery.trim()) return;
+    const permittedIds =
+      searchDocFilter === "all" ? undefined : [searchDocFilter];
+    searchMutation.mutate({
+      query: searchQuery.trim(),
+      top_k: searchTopK,
+      permitted_document_ids: permittedIds,
+    });
+  };
+
 
   const system = statusQuery.data;
   const systemReady = system?.metadata_store.status === "ready";
@@ -453,12 +513,19 @@ export function OperationsConsole() {
                   status={system?.ocr.status ?? "unavailable"}
                 />
                 <ServiceTile
+                  icon={Cpu}
+                  label="Embeddings"
+                  detail="BGE-M3"
+                  status={system?.embedding?.status ?? "unavailable"}
+                />
+                <ServiceTile
                   icon={Server}
                   label="Local model"
                   detail="Qwen3-VL-4B"
                   status={system?.local_model.status ?? "unavailable"}
                 />
               </section>
+
 
               <div className="content-grid">
                 <section className="panel intake-panel">
@@ -1120,8 +1187,315 @@ export function OperationsConsole() {
             </div>
           )}
 
+          {/* Intelligence Workspace Tab */}
+          {activeNav === "Intelligence" && (
+            <div className="intelligence-workspace">
+              {/* Status and telemetry bar */}
+              <div className="retrieval-telemetry-grid">
+                <div className="telemetry-card">
+                  <span className="telemetry-kicker">Vector Store</span>
+                  <div className="telemetry-content">
+                    <Database size={20} />
+                    <div>
+                      <strong>Qdrant Local</strong>
+                      <span className="telemetry-sub">{retrievalStatusQuery.data?.collection_name ?? "koshshield_masked_docs"}</span>
+                    </div>
+                  </div>
+                  <div className="telemetry-status">
+                    <StatusBadge status={retrievalStatusQuery.data?.vector_store_status ?? "unavailable"} />
+                  </div>
+                </div>
+
+                <div className="telemetry-card">
+                  <span className="telemetry-kicker">Embedding Model</span>
+                  <div className="telemetry-content">
+                    <Cpu size={20} />
+                    <div>
+                      <strong>BGE-M3 Hybrid</strong>
+                      <span className="telemetry-sub">Dense (1024) + Lexical</span>
+                    </div>
+                  </div>
+                  <div className="telemetry-status">
+                    <StatusBadge status={retrievalStatusQuery.data?.embedding_model_status ?? "unavailable"} />
+                  </div>
+                </div>
+
+                <div className="telemetry-card">
+                  <span className="telemetry-kicker">Indexed Corpus</span>
+                  <div className="telemetry-content">
+                    <Layers size={20} />
+                    <div>
+                      <strong>{retrievalStatusQuery.data?.indexed_documents_count ?? 0} Documents</strong>
+                      <span className="telemetry-sub">INDEXED in vector store</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="telemetry-card">
+                  <span className="telemetry-kicker">Vector Points</span>
+                  <div className="telemetry-content">
+                    <Fingerprint size={20} />
+                    <div>
+                      <strong>{retrievalStatusQuery.data?.total_chunks ?? 0} Chunks</strong>
+                      <span className="telemetry-sub">Masked passage points</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Indexing Command Panel */}
+              <section className="panel index-command-panel">
+                <div className="panel-heading">
+                  <div>
+                    <span className="section-kicker">Corpus Indexing</span>
+                    <h2>Vectorize Approved Documents</h2>
+                  </div>
+                  <span className="privacy-pill">
+                    <ShieldCheck size={14} /> Privacy Gate Enforced
+                  </span>
+                </div>
+
+                <p className="panel-instruction">
+                  Only documents in <strong>INDEX_READY</strong> or <strong>INDEXED</strong> status with zero unresolved findings are eligible for local Qdrant vectorization. Original documents are never decrypted; only approved masked text is chunked and embedded.
+                </p>
+
+                <div className="index-action-row">
+                  <select
+                    className="doc-select-input"
+                    value={selectedIndexDocId}
+                    onChange={(e) => setSelectedIndexDocId(e.target.value)}
+                  >
+                    <option value="">-- Select an approved document to index --</option>
+                    {documentsQuery.data
+                      ?.filter((d) => d.status === "INDEX_READY" || d.status === "INDEXED")
+                      .map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.filename} ({formatStatusLabel(d.status)} · {d.size_bytes} B)
+                        </option>
+                      ))}
+                  </select>
+
+                  <button
+                    className="primary-button"
+                    disabled={!selectedIndexDocId || indexMutation.isPending}
+                    onClick={() => selectedIndexDocId && indexMutation.mutate(selectedIndexDocId)}
+                  >
+                    {indexMutation.isPending ? (
+                      <>
+                        <Loader2 size={16} className="spin-loader" /> Vectorizing…
+                      </>
+                    ) : (
+                      <>
+                        <Layers size={16} style={{ marginRight: 6 }} /> Index into Qdrant
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {indexMutation.isError && (
+                  <p className="form-error" style={{ marginTop: "0.75rem" }}>
+                    <CircleAlert size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                    {indexMutation.error.message}
+                  </p>
+                )}
+                {indexMutation.isSuccess && (
+                  <p className="form-success" style={{ marginTop: "0.75rem" }}>
+                    <CheckCircle2 size={15} /> Document indexed successfully ({indexMutation.data.chunk_count} chunks). Audit record emitted.
+                  </p>
+                )}
+              </section>
+
+              {/* Hybrid Search Panel */}
+              <section className="panel hybrid-search-panel">
+                <div className="panel-heading">
+                  <div>
+                    <span className="section-kicker">Hybrid Retrieval</span>
+                    <h2>Dense & Sparse Search with Citations</h2>
+                  </div>
+                  <span className="privacy-pill">
+                    <Fingerprint size={14} /> Cryptographic Citations
+                  </span>
+                </div>
+
+                <form onSubmit={handleSearchSubmit} className="search-form">
+                  <div className="search-input-wrapper">
+                    <Search size={18} className="search-icon-left" />
+                    <input
+                      type="text"
+                      className="search-input"
+                      placeholder="Search confidential intelligence (e.g., procurement guidelines, tender deadlines, budget allocation...)"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      className="search-submit-button"
+                      disabled={!searchQuery.trim() || searchMutation.isPending}
+                    >
+                      {searchMutation.isPending ? (
+                        <>
+                          <Loader2 size={16} className="spin-loader" /> Searching…
+                        </>
+                      ) : (
+                        "Search Evidence"
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="search-filters-row">
+                    <div className="filter-group">
+                      <label htmlFor="topk-select">Top Results:</label>
+                      <select
+                        id="topk-select"
+                        value={searchTopK}
+                        onChange={(e) => setSearchTopK(Number(e.target.value))}
+                        className="filter-select"
+                      >
+                        <option value={3}>Top 3</option>
+                        <option value={5}>Top 5</option>
+                        <option value={10}>Top 10</option>
+                        <option value={20}>Top 20</option>
+                      </select>
+                    </div>
+
+                    <div className="filter-group">
+                      <label htmlFor="docfilter-select">Scope:</label>
+                      <select
+                        id="docfilter-select"
+                        value={searchDocFilter}
+                        onChange={(e) => setSearchDocFilter(e.target.value)}
+                        className="filter-select"
+                      >
+                        <option value="all">All Permitted Documents</option>
+                        {documentsQuery.data
+                          ?.filter((d) => d.status === "INDEXED")
+                          .map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.filename}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+
+                    <div className="filter-hint">
+                      <span>Reciprocal Rank Fusion (RRF: k=60) · Strict Tenant Isolation</span>
+                    </div>
+                  </div>
+                </form>
+
+                {/* Search Feedback & Results Area */}
+                <div className="search-results-area">
+                  {searchMutation.isPending && (
+                    <div className="search-loading-state">
+                      <Loader2 size={28} className="spin-loader" />
+                      <strong>Generating BGE-M3 query representations…</strong>
+                      <span>Executing dual dense + sparse search and fusing ranked candidates with RRF.</span>
+                    </div>
+                  )}
+
+                  {searchMutation.isError && (
+                    <div className="search-error-state">
+                      <CircleAlert size={28} />
+                      <strong>Retrieval query failed</strong>
+                      <span>{searchMutation.error.message}</span>
+                    </div>
+                  )}
+
+                  {searchMutation.isSuccess && searchMutation.data.results.length === 0 && (
+                    <div className="search-empty-state">
+                      <FileSearch size={32} />
+                      <strong>No evidence matches found</strong>
+                      <span>No chunks matching the query were found within your authorized scope. Try expanding keywords or indexing additional documents.</span>
+                    </div>
+                  )}
+
+                  {searchMutation.isSuccess && searchMutation.data.results.length > 0 && (
+                    <div className="evidence-results-list">
+                      <div className="evidence-summary-bar">
+                        <span>
+                          <strong>{searchMutation.data.total_found}</strong> verified evidence passage(s) retrieved
+                        </span>
+                        <div className="evidence-query-meta">
+                          <span>Query Hash: <code>{shortHash(searchMutation.data.query_hash)}</code></span>
+                          <span className="fusion-pill">RRF Fused</span>
+                        </div>
+                      </div>
+
+                      {searchMutation.data.results.map((item) => (
+                        <article key={item.chunk_id} className="evidence-card">
+                          <header className="evidence-card-header">
+                            <div className="evidence-rank-group">
+                              <span className="rank-badge">#{item.rank}</span>
+                              <span className="fused-score-badge">Score: {item.fused_score}</span>
+                              <div className="source-badges-group">
+                                {item.sources.map((s) => (
+                                  <span key={s} className={`source-badge source-${s}`}>
+                                    {s === "dense" ? "Dense vector" : s === "sparse" ? "Sparse lexical" : s}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="citation-container">
+                              <code className="citation-code">{item.citation_label}</code>
+                              <button
+                                type="button"
+                                className="copy-citation-btn"
+                                title="Copy citation to clipboard"
+                                onClick={() => handleCopyCitation(item.citation_label)}
+                              >
+                                {copiedCitation === item.citation_label ? (
+                                  <Check size={14} style={{ color: "var(--green-700)" }} />
+                                ) : (
+                                  <Copy size={14} />
+                                )}
+                              </button>
+                            </div>
+                          </header>
+
+                          <div className="evidence-text-snippet">
+                            <p>{item.masked_snippet}</p>
+                          </div>
+
+                          <footer className="evidence-card-footer">
+                            <div className="meta-item">
+                              <FileText size={13} />
+                              <span>{item.document_filename}</span>
+                            </div>
+                            <div className="meta-item">
+                              <BookOpen size={13} />
+                              <span>Page {item.page_number}</span>
+                            </div>
+                            <div className="meta-item">
+                              <Fingerprint size={13} />
+                              <span>Evidence: <code>{item.evidence_hash.slice(0, 16)}…</code></span>
+                            </div>
+                            <div className="meta-item">
+                              <ShieldCheck size={13} />
+                              <span>Redaction v{item.redaction_version}</span>
+                            </div>
+                          </footer>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+
+                  {!searchMutation.isPending && !searchMutation.isSuccess && !searchMutation.isError && (
+                    <div className="search-idle-state">
+                      <FileSearch size={36} />
+                      <strong>Intelligence evidence workspace ready</strong>
+                      <span>
+                        Enter a keyword or natural language query above to retrieve dense and sparse candidate passages from authorized documents.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+
           {/* Fallback for other tabs */}
-          {(activeNav === "Intelligence" || activeNav === "Approvals" || activeNav === "Audit trail") && (
+          {(activeNav === "Approvals" || activeNav === "Audit trail") && (
             <section className="panel placeholder-panel">
               <div className="panel-heading">
                 <div>
@@ -1130,8 +1504,6 @@ export function OperationsConsole() {
                 </div>
               </div>
               <p className="placeholder-text">
-                {activeNav === "Intelligence" &&
-                  "Masked Qdrant vector retrieval and multimodal hybrid RAG are scheduled for Milestone 3."}
                 {activeNav === "Approvals" &&
                   "Policy-gated agent tools and Docker sandbox approvals are scheduled for Milestone 5."}
                 {activeNav === "Audit trail" &&

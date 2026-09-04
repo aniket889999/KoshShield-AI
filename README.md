@@ -32,12 +32,13 @@ The implementation plan and architecture boundaries are documented in
 
 ## Development status
 
-Milestone 2 is implemented: air-gapped document extraction (PyMuPDF native text
-with real local PaddleOCR fallback), deterministic Indian PII recognition (Aadhaar
-with Verhoeff checksum, PAN, phone, email, bank accounts, IFSC, passport, government
-IDs), encrypted vault artifact storage, and a human-in-the-loop redaction review
-workspace in the Next.js console. Indexing is strictly gated behind human
-redaction approval. Masked BGE-M3/Qdrant retrieval is the next milestone.
+Milestone 3 is implemented: masked BGE-M3 hybrid retrieval with Qdrant and verifiable citations.
+It features a strict pre-indexing privacy gate (guaranteeing zero raw PII leaks into vector storage),
+deterministic page-aware chunking preserving redaction markers, dense (1024-d) and lexical sparse
+representations, Reciprocal Rank Fusion (RRF k=60), strict multi-tenant authorization filtering,
+verifiable evidence citations (`[Document: <id> | Page: <n> | Evidence: <hash:12>]`), privacy-safe
+query audit logging (SHA-256 hash only), and an interactive Intelligence console tab in Next.js.
+Multimodal page/crop retrieval with Qwen3-VL is the next milestone.
 
 ## Local quick start
 

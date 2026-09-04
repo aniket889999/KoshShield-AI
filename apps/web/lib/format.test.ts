@@ -33,6 +33,9 @@ describe("format helpers", () => {
   it("formats status labels", () => {
     expect(formatStatusLabel("REVIEW_REQUIRED")).toBe("Review required");
     expect(formatStatusLabel("INDEX_READY")).toBe("Index ready");
+    expect(formatStatusLabel("INDEXING")).toBe("Indexing…");
+    expect(formatStatusLabel("INDEXED")).toBe("Indexed");
+    expect(formatStatusLabel("INDEX_FAILED")).toBe("Index failed");
     expect(formatStatusLabel("ENCRYPTED")).toBe("Encrypted");
   });
 });

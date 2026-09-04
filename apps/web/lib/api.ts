@@ -16,7 +16,9 @@ export interface SystemStatus {
   vector_store: DependencyState;
   local_model: DependencyState;
   ocr: DependencyState;
+  embedding: DependencyState;
 }
+
 
 export interface DocumentRecord {
   id: string;
@@ -198,5 +200,83 @@ export function approveRedactions(documentId: string) {
   return request<DocumentRecord>(`/documents/${documentId}/redactions/approve`, {
     method: "POST",
     headers: { "X-Actor-ID": "local-demo-user" },
+  });
+}
+
+export interface IndexingStatus {
+  document_id: string;
+  status: string;
+  chunk_count: number;
+  redaction_version: number;
+  tenant_id: string;
+  collection_name: string;
+  completed_at?: string | null;
+}
+
+export interface RetrievalEvidenceItem {
+  rank: number;
+  fused_score: number;
+  sources: string[];
+  masked_snippet: string;
+  document_id: string;
+  document_filename: string;
+  page_number: number;
+  chunk_id: string;
+  evidence_hash: string;
+  redaction_version: number;
+  citation_label: string;
+}
+
+export interface RetrievalResponse {
+  query_hash: string;
+  tenant_id: string;
+  top_k: number;
+  total_found: number;
+  results: RetrievalEvidenceItem[];
+}
+
+export interface RetrievalStatus {
+  collection_name: string;
+  vector_store_status: DependencyStatus;
+  embedding_model_status: DependencyStatus;
+  embedding_model_reason: string;
+  total_chunks: number;
+  indexed_documents_count: number;
+}
+
+export function indexDocument(documentId: string) {
+  return request<IndexingStatus>(`/documents/${documentId}/index`, {
+    method: "POST",
+    headers: {
+      "X-Actor-ID": "local-demo-user",
+      "X-Tenant-ID": "default",
+    },
+  });
+}
+
+export function getDocumentIndexing(documentId: string) {
+  return request<IndexingStatus>(`/documents/${documentId}/indexing`, {
+    headers: { "X-Tenant-ID": "default" },
+  });
+}
+
+export function getRetrievalStatus() {
+  return request<RetrievalStatus>("/retrieval/status");
+}
+
+export function searchRetrieval(params: {
+  query: string;
+  top_k?: number;
+  permitted_document_ids?: string[];
+  classification?: string;
+}) {
+  return request<RetrievalResponse>("/retrieval/search", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Actor-ID": "local-demo-user",
+      "X-Tenant-ID": "default",
+    },
+    body: JSON.stringify(params),
   });
 }

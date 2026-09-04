@@ -107,3 +107,51 @@ class AuditIntegrityResponse(BaseModel):
     event_count: int
     head_hash: str | None
     first_invalid_event_id: str | None = None
+
+
+class IndexingStatusResponse(BaseModel):
+    document_id: str
+    status: str
+    chunk_count: int
+    redaction_version: int
+    tenant_id: str
+    collection_name: str
+    completed_at: str | None = None
+
+
+class RetrievalSearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    permitted_document_ids: list[str] | None = None
+    classification: str | None = None
+
+
+class RetrievalEvidenceItem(BaseModel):
+    rank: int
+    fused_score: float
+    sources: list[str]
+    masked_snippet: str
+    document_id: str
+    document_filename: str
+    page_number: int
+    chunk_id: str
+    evidence_hash: str
+    redaction_version: int
+    citation_label: str
+
+
+class RetrievalResponse(BaseModel):
+    query_hash: str
+    tenant_id: str
+    top_k: int
+    total_found: int
+    results: list[RetrievalEvidenceItem]
+
+
+class RetrievalStatusResponse(BaseModel):
+    collection_name: str
+    vector_store_status: str
+    embedding_model_status: str
+    embedding_model_reason: str
+    total_chunks: int
+    indexed_documents_count: int

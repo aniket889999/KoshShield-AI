@@ -18,6 +18,9 @@ class DocumentState:
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
     REDACTION_APPROVED = "REDACTION_APPROVED"
     INDEX_READY = "INDEX_READY"
+    INDEXING = "INDEXING"
+    INDEXED = "INDEXED"
+    INDEX_FAILED = "INDEX_FAILED"
     EXTRACTION_FAILED = "EXTRACTION_FAILED"
 
 
@@ -40,7 +43,10 @@ VALID_DOCUMENT_TRANSITIONS: dict[str, set[str]] = {
         DocumentState.EXTRACTION_FAILED,
     },
     DocumentState.REDACTION_APPROVED: {DocumentState.INDEX_READY},
-    DocumentState.INDEX_READY: set(),
+    DocumentState.INDEX_READY: {DocumentState.INDEXING},
+    DocumentState.INDEXING: {DocumentState.INDEXED, DocumentState.INDEX_FAILED},
+    DocumentState.INDEXED: {DocumentState.INDEXING},
+    DocumentState.INDEX_FAILED: {DocumentState.INDEXING, DocumentState.INDEX_READY},
     DocumentState.EXTRACTION_FAILED: {DocumentState.EXTRACTION_QUEUED},
 }
 
@@ -148,4 +154,20 @@ class AuditEvent(Base):
     details: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     previous_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DocumentChunkRecord(Base):
+    __tablename__ = "document_chunks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    page_number: Mapped[int] = mapped_column(Integer)
+    chunk_sequence: Mapped[int] = mapped_column(Integer)
+    chunk_id: Mapped[str] = mapped_column(String(64), index=True)
+    char_start: Mapped[int] = mapped_column(Integer)
+    char_end: Mapped[int] = mapped_column(Integer)
+    masked_content_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

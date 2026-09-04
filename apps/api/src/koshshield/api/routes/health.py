@@ -32,6 +32,7 @@ class SystemStatus(BaseModel):
     vector_store: DependencyState
     local_model: DependencyState
     ocr: DependencyState
+    embedding: DependencyState
 
 
 async def probe(endpoint: str) -> DependencyState:
@@ -86,6 +87,23 @@ async def system_status(
         if not settings.ocr_det_model_dir
         else "unavailable"
     )
+
+    from koshshield.services.retrieval.embeddings.bge_m3 import BgeM3EmbeddingProvider
+
+    bge_provider = BgeM3EmbeddingProvider(
+        model_dir=settings.embedding_model_dir,
+        device=settings.embedding_device,
+        batch_size=settings.embedding_batch_size,
+    )
+    emb_ready, emb_reason = bge_provider.is_available()
+    emb_status: Literal["ready", "unavailable", "not_configured"] = (
+        "ready"
+        if emb_ready
+        else "not_configured"
+        if not settings.embedding_model_dir
+        else "unavailable"
+    )
+
     return SystemStatus(
         application=settings.app_name,
         environment=settings.environment,
@@ -97,4 +115,5 @@ async def system_status(
         vector_store=qdrant,
         local_model=model,
         ocr=DependencyState(status=ocr_status, endpoint=ocr_reason),
+        embedding=DependencyState(status=emb_status, endpoint=emb_reason),
     )
