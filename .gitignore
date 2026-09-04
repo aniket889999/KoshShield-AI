@@ -1,0 +1,35 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# JavaScript
+node_modules/
+.next/
+out/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+dist/
+*.egg-info/
+
+# Local runtime data
+data/
+models/
+uploads/
+vault/
+qdrant_storage/
+postgres_data/
+*.gguf
+*.safetensors
+
+# Generated artifacts and logs
+artifacts/
+logs/
+*.log
