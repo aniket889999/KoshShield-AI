@@ -1416,7 +1416,7 @@ export function OperationsConsole() {
                           <strong>{searchMutation.data.total_found}</strong> verified evidence passage(s) retrieved
                         </span>
                         <div className="evidence-query-meta">
-                          <span>Query Hash: <code>{shortHash(searchMutation.data.query_hash)}</code></span>
+                          <span>Query: <code>{searchMutation.data.query_length} chars ({searchMutation.data.duration_ms}ms)</code></span>
                           <span className="fusion-pill">RRF Fused</span>
                         </div>
                       </div>

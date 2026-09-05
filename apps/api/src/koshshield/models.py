@@ -76,6 +76,8 @@ class DocumentRecord(Base):
     vault_path: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), default=DocumentState.ENCRYPTED)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    active_index_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    index_cleanup_pending: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -166,6 +168,7 @@ class DocumentChunkRecord(Base):
     )
     page_number: Mapped[int] = mapped_column(Integer)
     chunk_sequence: Mapped[int] = mapped_column(Integer)
+    index_version: Mapped[int] = mapped_column(Integer, default=1)
     chunk_id: Mapped[str] = mapped_column(String(64), index=True)
     char_start: Mapped[int] = mapped_column(Integer)
     char_end: Mapped[int] = mapped_column(Integer)

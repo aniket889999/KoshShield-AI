@@ -114,6 +114,7 @@ class IndexingStatusResponse(BaseModel):
     status: str
     chunk_count: int
     redaction_version: int
+    active_index_version: int | None = None
     tenant_id: str
     collection_name: str
     completed_at: str | None = None
@@ -136,12 +137,15 @@ class RetrievalEvidenceItem(BaseModel):
     page_number: int
     chunk_id: str
     evidence_hash: str
+    masked_content_hash: str
     redaction_version: int
+    index_version: int
     citation_label: str
 
 
 class RetrievalResponse(BaseModel):
-    query_hash: str
+    query_length: int
+    duration_ms: float
     tenant_id: str
     top_k: int
     total_found: int

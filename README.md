@@ -32,12 +32,18 @@ The implementation plan and architecture boundaries are documented in
 
 ## Development status
 
-Milestone 3 is implemented: masked BGE-M3 hybrid retrieval with Qdrant and verifiable citations.
-It features a strict pre-indexing privacy gate (guaranteeing zero raw PII leaks into vector storage),
-deterministic page-aware chunking preserving redaction markers, dense (1024-d) and lexical sparse
-representations, Reciprocal Rank Fusion (RRF k=60), strict multi-tenant authorization filtering,
-verifiable evidence citations (`[Document: <id> | Page: <n> | Evidence: <hash:12>]`), privacy-safe
-query audit logging (SHA-256 hash only), and an interactive Intelligence console tab in Next.js.
+Milestone 3 is implemented and security-hardened: masked BGE-M3 hybrid retrieval
+with the official version-pinned `qdrant-client` and cryptographic citations.
+It features:
+- Pre-indexing privacy gate ensuring zero unreviewed PII reaches retrieval stores.
+- Deterministic UUIDv5 chunk identities derived from tenant, full document ID, version, and content hash.
+- Fail-closed BGE-M3 embedding provider with dynamic dimension verification against Qdrant schema.
+- Failure-safe reindexing with authoritative `active_index_version`, point verification, and non-blocking stale point cleanup.
+- Reciprocal Rank Fusion (RRF k=60) with mandatory server-enforced tenant filtering.
+- Verifiable evidence citations with full 64-character SHA-256 evidence digests.
+- Unsalted query privacy auditing (query length and duration only; zero query text or digests stored).
+- Separated benchmarks: deterministic synthetic pipeline evaluation vs real-model integration.
+- Interactive Intelligence console in Next.js with real-time vector telemetry.
 Multimodal page/crop retrieval with Qwen3-VL is the next milestone.
 
 ## Local quick start

@@ -46,8 +46,8 @@ def test_hybrid_search_rrf_and_citations(db_session: Session) -> None:
         masked_text=text_1,
         char_start=0,
         char_end=len(text_1),
-        masked_content_hash="mhash-1",
-        document_evidence_hash="46337dd5abc1234567890abcdef12345",
+        masked_content_hash="a" * 64,
+        document_evidence_hash="b" * 64,
         classification="CONFIDENTIAL",
         document_filename="Tender-2026.pdf",
         indexed_at="2026-09-04T12:00:00Z",
@@ -67,8 +67,8 @@ def test_hybrid_search_rrf_and_citations(db_session: Session) -> None:
         masked_text=text_2,
         char_start=0,
         char_end=len(text_2),
-        masked_content_hash="mhash-2",
-        document_evidence_hash="99887766aabbccddeeff001122334455",
+        masked_content_hash="c" * 64,
+        document_evidence_hash="d" * 64,
         classification="CONFIDENTIAL",
         document_filename="Budget-2026.pdf",
         indexed_at="2026-09-04T12:00:00Z",
@@ -98,10 +98,16 @@ def test_hybrid_search_rrf_and_citations(db_session: Session) -> None:
     top_result = pack.items[0]
     assert top_result.document_id == "doc-procure-1"
     assert top_result.page_number == 3
-    assert top_result.citation_label == "[Document: Tender-2026.pdf | Page: 3 | Evidence: 46337dd5]"
+    assert top_result.citation_label.startswith("[Document: Tender-2026.pdf | Page: 3 | Evidence:")
     assert "dense" in top_result.sources
+    assert len(top_result.evidence_hash) == 64
+    assert len(top_result.masked_content_hash) == 64
 
-    # Check safe audit logging: raw query must NOT be present
+    # Check safe audit logging: raw query AND query hash must NOT be present
+    import hashlib
+
+    raw_query_digest = hashlib.sha256(raw_query.encode("utf-8")).hexdigest()
+
     audit = db_session.scalar(
         select(AuditEvent).where(
             AuditEvent.event_type == "RETRIEVAL_QUERY_EXECUTED",
@@ -109,9 +115,14 @@ def test_hybrid_search_rrf_and_citations(db_session: Session) -> None:
         )
     )
     assert audit is not None
-    assert raw_query not in str(audit.details)
-    assert "query_hash" in audit.details
+    audit_str = str(audit.details)
+    assert raw_query not in audit_str
+    assert raw_query_digest not in audit_str
+    assert "query_hash" not in audit.details
     assert "query_length" in audit.details
+    assert audit.details["query_length"] == len(raw_query)
+    assert "result_chunk_ids" in audit.details
+    assert "duration_ms" in audit.details
 
 
 def test_cross_tenant_isolation() -> None:

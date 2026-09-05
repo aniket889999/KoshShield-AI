@@ -24,17 +24,20 @@
 - Raw text stored in encrypted vault only; database contains only salted hashes and masked text.
 - Indexing remains strictly blocked until all redactions are approved.
 
-## Milestone 3: masked hybrid RAG (completed)
+## Milestone 3: masked hybrid RAG (completed & hardened)
 
+- Official `qdrant-client` adapter (version-pinned, `prefer_grpc=False`) with typed models and local-only URL enforcement.
 - Deterministic token-aware chunking preserving page boundaries and `[REDACTED_*]` tags.
+- Deterministic UUIDv5 chunk identities derived from tenant, untruncated doc ID, version, page, sequence, and content hash.
 - Pre-indexing privacy gate verifying zero unresolved findings and re-scanning masked text.
-- BGE-M3 dense (1024-d) and lexical sparse embeddings with offline deterministic fallbacks.
-- Qdrant vector store indexing with named vectors (`text_dense`, `text_sparse`) and payload indexes.
-- Reciprocal Rank Fusion (RRF $k=60$) hybrid search with tenant isolation and document authorization filters.
-- Verifiable citation generation format: `[Document: <id> | Page: <n> | Evidence: <hash:12>]`.
-- Privacy-safe query auditing (recording query SHA-256 and result counts, never query text).
-- Golden-query retrieval evaluation benchmark achieving Recall@5: 1.0, MRR: 1.0, and 0 cross-tenant leaks.
-- Intelligence workspace in Next.js console with vector store telemetry, corpus indexing, and search with citation copy.
+- Fail-closed local BGE-M3 embedding provider with dynamic dimension detection and tri-point schema verification.
+- Failure-safe reindexing sequence: chunk -> embed -> verify -> upsert -> point verify -> atomic DB activation -> stale point cleanup.
+- Authoritative `active_index_version` ensuring old versions remain intact if reindexing fails.
+- Reciprocal Rank Fusion (RRF $k=60$) hybrid search with server-enforced tenant isolation on all vector operations.
+- Cryptographic evidence citations with full 64-character SHA-256 evidence digests and masked content hashes.
+- Unsalted query privacy auditing (recording query character length and execution duration, never query text or SHA-256 digests).
+- Accurate benchmark separation: deterministic synthetic pipeline evaluation vs real-model integration (labeled NOT EXECUTED if weights/containers absent).
+- Interactive Intelligence console in Next.js with vector store telemetry, corpus indexing, and search.
 
 ## Milestone 4: multimodal retrieval
 

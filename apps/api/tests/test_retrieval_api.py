@@ -71,12 +71,14 @@ def test_document_indexing_lifecycle_endpoint(
     assert idx_data["document_id"] == doc_id
     assert idx_data["status"] == "INDEXED"
     assert idx_data["chunk_count"] >= 1
+    assert idx_data["active_index_version"] == 1
 
     # 2. Check indexing status
     status_res = client.get(f"/api/v1/documents/{doc_id}/indexing")
     assert status_res.status_code == 200
     assert status_res.json()["status"] == "INDEXED"
     assert status_res.json()["chunk_count"] >= 1
+    assert status_res.json()["active_index_version"] == 1
 
     # 3. Search for evidence
     search_res = client.post(
@@ -86,7 +88,23 @@ def test_document_indexing_lifecycle_endpoint(
     assert search_res.status_code == 200
     search_data = search_res.json()
     assert search_data["total_found"] >= 1
+    assert search_data["query_length"] == len("tender deadline")
+    assert "duration_ms" in search_data
+    assert "query_hash" not in search_data
+
     evidence = search_data["results"][0]
     assert evidence["document_id"] == doc_id
     assert "tender_approved.pdf" in evidence["citation_label"]
     assert "September" in evidence["masked_snippet"]
+    assert len(evidence["evidence_hash"]) == 64
+    assert len(evidence["masked_content_hash"]) == 64
+    assert evidence["index_version"] == 1
+
+    # 4. Prove body tenant spoofing is ignored / impossible
+    spoofed_res = client.post(
+        "/api/v1/retrieval/search",
+        headers={"X-Tenant-ID": "tenant-authorized"},
+        json={"query": "tender deadline", "tenant_id": "tenant-spoofed"},
+    )
+    assert spoofed_res.status_code == 200
+    assert spoofed_res.json()["tenant_id"] == "tenant-authorized"

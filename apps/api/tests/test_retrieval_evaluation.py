@@ -1,11 +1,15 @@
+import os
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
+import pytest
 from sqlalchemy.orm import Session
 
 from koshshield.database import engine
 from koshshield.models import DocumentPageRecord, DocumentRecord, DocumentState
 from koshshield.services.retrieval.chunking import DeterministicMaskedChunker
+from koshshield.services.retrieval.embeddings.bge_m3 import BgeM3EmbeddingProvider
 from koshshield.services.retrieval.embeddings.deterministic_fake import (
     DeterministicEmbeddingProvider,
 )
@@ -13,6 +17,7 @@ from koshshield.services.retrieval.hybrid_search import HybridRetrievalService
 from koshshield.services.retrieval.indexing_service import DocumentIndexingService
 from koshshield.services.retrieval.privacy_gate import RetrievalPrivacyGate
 from koshshield.services.retrieval.vector_store import InMemoryVectorStore
+from koshshield.services.retrieval.vector_store.qdrant import QdrantVectorStore
 
 
 @dataclass
@@ -23,8 +28,15 @@ class GoldenQuery:
     tenant_id: str
 
 
-def test_retrieval_evaluation_benchmark() -> None:
-    """Evaluates Recall@5, MRR, citation completeness, and cross-tenant leakage."""
+def test_deterministic_synthetic_pipeline_evaluation() -> None:
+    """Deterministic synthetic pipeline evaluation.
+
+    Validates:
+    - Reciprocal Rank Fusion (RRF k=60) ranking correctness
+    - Mandatory multi-tenant isolation (0 cross-tenant leaks)
+    - Full citation completeness across retrieved results
+    NOTE: Uses the deterministic fake provider; does NOT reflect real BGE-M3 quality.
+    """
     embedding_provider = DeterministicEmbeddingProvider()
     vector_store = InMemoryVectorStore()
     privacy_gate = RetrievalPrivacyGate()
@@ -40,7 +52,7 @@ def test_retrieval_evaluation_benchmark() -> None:
         rrf_k=60,
     )
 
-    # 1. Build synthetic corpus (5 documents across 2 tenants)
+    # 1. Build synthetic corpus (5 documents across 5 tenants)
     corpus_specs = [
         {
             "doc_id": "doc-eval-1",
@@ -146,7 +158,6 @@ def test_retrieval_evaluation_benchmark() -> None:
 
         # Check for cross-tenant leaks
         for item in pack.items:
-            # Look up document owner
             owner_tenant = next(
                 s["tenant"] for s in corpus_specs if s["doc_id"] == item.document_id
             )
@@ -181,8 +192,41 @@ def test_retrieval_evaluation_benchmark() -> None:
     mrr = sum(reciprocal_ranks) / total_queries
     citation_rate = citations_complete / max(1, total_retrieved)
 
-    # Assertions for evaluation benchmarks
+    # Assertions for deterministic synthetic evaluation
     assert recall_at_5 == 1.0, f"Expected Recall@5 == 1.0, got {recall_at_5}"
     assert mrr >= 0.8, f"Expected MRR >= 0.8, got {mrr}"
     assert cross_tenant_leaks == 0, f"Cross-tenant leaks detected: {cross_tenant_leaks}"
     assert citation_rate == 1.0, f"Citation rate must be 1.0, got {citation_rate}"
+
+
+def test_real_bge_m3_qdrant_integration() -> None:
+    """Real BGE-M3 + real Qdrant integration benchmark.
+
+    Executes only when local weights exist at KOSHSHIELD_EMBEDDING_MODEL_DIR
+    and Qdrant container is responsive. Otherwise states NOT EXECUTED.
+    """
+    model_dir_env = os.environ.get("KOSHSHIELD_EMBEDDING_MODEL_DIR", "./models/bge-m3")
+    model_path = Path(model_dir_env)
+    if not model_path.exists() or not (model_path / "config.json").exists():
+        pytest.skip(f"Real BGE-M3 weights missing at {model_path} (NOT EXECUTED)")
+
+    import httpx
+
+    try:
+        r = httpx.get("http://127.0.0.1:6333/healthz", timeout=1.0)
+        if r.status_code != 200:
+            pytest.skip("Docker Qdrant unavailable on 127.0.0.1:6333 (NOT EXECUTED)")
+    except Exception:
+        pytest.skip("Docker Qdrant unavailable on 127.0.0.1:6333 (NOT EXECUTED)")
+
+    # If both exist, run real integration
+    emb_provider = BgeM3EmbeddingProvider(model_dir=model_path)
+    ready, reason = emb_provider.is_available()
+    if not ready:
+        pytest.skip(f"BGE-M3 provider not ready: {reason} (NOT EXECUTED)")
+
+    vector_store = QdrantVectorStore(
+        qdrant_url="http://127.0.0.1:6333",
+        collection_name="koshshield_real_bench",
+    )
+    vector_store.ensure_collection(dense_dim=emb_provider.dense_dim)

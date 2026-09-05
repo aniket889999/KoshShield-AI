@@ -1,7 +1,11 @@
 import hashlib
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+
+# Authoritative deterministic namespace for KoshShield chunk identities
+KOSHSHIELD_CHUNK_NAMESPACE = uuid.UUID("a7b8c9d0-e1f2-4a3b-8c5d-6e7f8a9b0c1d")
 
 
 @dataclass
@@ -20,6 +24,7 @@ class MaskedChunk:
     classification: str
     document_filename: str
     indexed_at: str
+    index_version: int = 1
 
 
 class DeterministicMaskedChunker:
@@ -135,9 +140,12 @@ class DeterministicMaskedChunker:
             chunk_content = clean_text[start:end].strip()
             if chunk_content:
                 content_hash = hashlib.sha256(chunk_content.encode("utf-8")).hexdigest()
-                # Deterministic stable chunk ID
-                chunk_id_raw = f"{document_id}:p{page_number}:seq{seq}:{content_hash}"
-                chunk_id = hashlib.sha256(chunk_id_raw.encode("utf-8")).hexdigest()[:32]
+                # Deterministic UUIDv5 identity preserving full doc ID, tenant, version, and hash
+                identity_seed = (
+                    f"tenant:{tenant_id}|doc:{document_id}|ver:{redaction_version}|"
+                    f"p:{page_number}|seq:{seq}|hash:{content_hash}"
+                )
+                chunk_id = str(uuid.uuid5(KOSHSHIELD_CHUNK_NAMESPACE, identity_seed))
 
                 chunks.append(
                     MaskedChunk(
@@ -146,6 +154,7 @@ class DeterministicMaskedChunker:
                         document_id=document_id,
                         page_number=page_number,
                         redaction_version=redaction_version,
+                        index_version=redaction_version,
                         chunk_sequence=seq,
                         masked_text=chunk_content,
                         char_start=start,

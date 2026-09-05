@@ -110,6 +110,7 @@ def index_document(
             status=result.status,
             chunk_count=result.chunk_count,
             redaction_version=result.redaction_version,
+            active_index_version=result.active_index_version,
             tenant_id=result.tenant_id,
             collection_name=settings.qdrant_collection,
             completed_at=result.completed_at,
@@ -168,6 +169,7 @@ def get_document_indexing(
         status=doc.status,
         chunk_count=int(chunk_count),
         redaction_version=doc.version,
+        active_index_version=doc.active_index_version,
         tenant_id=x_tenant_id,
         collection_name=settings.qdrant_collection,
         completed_at=doc.updated_at.isoformat() if doc.status == DocumentState.INDEXED else None,
@@ -224,6 +226,12 @@ def search_retrieval(
     x_tenant_id: str = Header(default="default"),
     x_actor_id: str = Header(default="demo-user"),
 ) -> RetrievalResponse:
+    """Executes local hybrid search across authorized masked document chunks.
+
+    NOTE: The 'X-Tenant-ID' request header is a demo security boundary,
+    not production authentication. Production deployments must bind tenant identity
+    to a verified cryptographic token (e.g. mutual TLS or signed JWT session).
+    """
     try:
         evidence_pack = retrieval_service.search(
             query=request.query,
@@ -236,7 +244,8 @@ def search_retrieval(
         )
 
         return RetrievalResponse(
-            query_hash=evidence_pack.query_hash,
+            query_length=evidence_pack.query_length,
+            duration_ms=evidence_pack.duration_ms,
             tenant_id=evidence_pack.tenant_id,
             top_k=evidence_pack.top_k,
             total_found=evidence_pack.total_found,
@@ -251,7 +260,9 @@ def search_retrieval(
                     page_number=item.page_number,
                     chunk_id=item.chunk_id,
                     evidence_hash=item.evidence_hash,
+                    masked_content_hash=item.masked_content_hash,
                     redaction_version=item.redaction_version,
+                    index_version=item.index_version,
                     citation_label=item.citation_label,
                 )
                 for item in evidence_pack.items

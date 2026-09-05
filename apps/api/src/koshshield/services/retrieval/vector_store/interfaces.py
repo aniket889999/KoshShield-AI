@@ -20,6 +20,7 @@ class VectorStoreChunk:
     document_filename: str
     indexed_at: str
     dense_vector: list[float]
+    index_version: int = 1
     sparse_indices: list[int] = field(default_factory=list)
     sparse_values: list[float] = field(default_factory=list)
 
@@ -30,6 +31,7 @@ class VectorStoreChunk:
             "document_id": self.document_id,
             "page_number": self.page_number,
             "redaction_version": self.redaction_version,
+            "index_version": self.index_version,
             "chunk_sequence": self.chunk_sequence,
             "masked_text": self.masked_text,
             "char_start": self.char_start,
@@ -65,7 +67,7 @@ class VectorStore(Protocol):
 
     def ensure_collection(self, dense_dim: int) -> None:
         """Create or validate the collection schema with named dense and sparse vectors
-        and payload indexes.
+        and payload indexes. Never silently recreate or delete an incompatible collection.
         """
         ...
 
@@ -73,8 +75,24 @@ class VectorStore(Protocol):
         """Upsert a batch of chunks idempotently."""
         ...
 
-    def delete_document_chunks(self, document_id: str) -> int:
-        """Remove all chunks associated with a document (used on reindex or deletion)."""
+    def verify_points(self, point_ids: list[str], tenant_id: str) -> bool:
+        """Verify that all expected point IDs exist and strictly belong to tenant_id."""
+        ...
+
+    def delete_stale_chunks(self, document_id: str, tenant_id: str, active_version: int) -> int:
+        """Remove points for a document with index_version < active_version,
+        strictly scoped to tenant_id.
+        """
+        ...
+
+    def delete_document_chunks(self, document_id: str, tenant_id: str) -> int:
+        """Remove all chunks associated with a document, strictly scoped to tenant_id."""
+        ...
+
+    def retrieve_points(
+        self, point_ids: list[str], tenant_id: str
+    ) -> list[VectorStoreSearchResult]:
+        """Retrieve points by ID, enforcing mandatory tenant isolation."""
         ...
 
     def search_dense(

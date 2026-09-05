@@ -19,6 +19,7 @@ from koshshield.services.retrieval.privacy_gate import RetrievalPrivacyGate
 from koshshield.services.retrieval.vector_store.interfaces import (
     VectorStore,
     VectorStoreChunk,
+    VectorStoreError,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,12 +31,24 @@ class IndexingResult:
     status: str
     chunk_count: int
     redaction_version: int
+    active_index_version: int
     tenant_id: str
     completed_at: str
 
 
 class DocumentIndexingService:
-    """Orchestrates secure local indexing of privacy-approved documents into Qdrant."""
+    """Orchestrates secure, failure-safe local indexing of privacy-approved documents into Qdrant.
+
+    Enforces strict failure-safe sequencing:
+    1. Validate document state and privacy gate.
+    2. Generate and validate all chunks with current version.
+    3. Generate all embeddings and verify dimensions.
+    4. Upsert the new index version into vector store.
+    5. Verify expected point IDs and point count in vector store.
+    6. Mark the new version active atomically in metadata database.
+    7. Delete stale points from older versions (failure preserves valid active index).
+    8. Mark the document INDEXED.
+    """
 
     def __init__(
         self,
@@ -61,14 +74,17 @@ class DocumentIndexingService:
         if not doc:
             raise ValueError(f"Document '{document_id}' not found")
 
-        # 1. Run Privacy Gate
+        target_version = doc.version
+        previous_active_version = doc.active_index_version
+
+        # 1. Validate Privacy Gate
         pages = self.privacy_gate.validate_document_for_indexing(
             session=session,
             document=doc,
             actor_id=actor_id,
         )
 
-        # 2. State transition to INDEXING
+        # Transition to INDEXING
         validate_transition(doc.status, DocumentState.INDEXING)
         doc.status = DocumentState.INDEXING
         session.commit()
@@ -80,11 +96,15 @@ class DocumentIndexingService:
             event_type="DOCUMENT_INDEXING_STARTED",
             resource_type="document",
             resource_id=doc.id,
-            details={"tenant_id": tenant_id, "version": doc.version},
+            details={
+                "tenant_id": tenant_id,
+                "target_version": target_version,
+                "previous_active_version": previous_active_version,
+            },
         )
 
         try:
-            # 3. Deterministically chunk approved masked text
+            # 2. Deterministically chunk approved masked text
             all_chunks: list[MaskedChunk] = []
             for page in pages:
                 if not page.masked_text:
@@ -95,7 +115,7 @@ class DocumentIndexingService:
                     page_number=page.page_number,
                     document_filename=doc.filename,
                     document_evidence_hash=doc.sha256,
-                    redaction_version=doc.version,
+                    redaction_version=target_version,
                     tenant_id=tenant_id,
                     classification=classification,
                 )
@@ -104,7 +124,7 @@ class DocumentIndexingService:
             if not all_chunks:
                 raise ValueError("Document yielded no text chunks for indexing")
 
-            # 4. Generate local BGE-M3 embeddings
+            # 3. Generate local BGE-M3 embeddings
             texts = [c.masked_text for c in all_chunks]
             embedding_results = self.embedding_provider.embed_texts(texts)
             if len(embedding_results) != len(all_chunks):
@@ -113,16 +133,18 @@ class DocumentIndexingService:
                     f"got {len(embedding_results)}"
                 )
 
-            # 5. Ensure Qdrant collection exists with proper dimensions
-            self.vector_store.ensure_collection(dense_dim=self.embedding_provider.dense_dim)
+            # Tri-point dimension validation: model provider vs Qdrant collection schema
+            expected_dim = self.embedding_provider.dense_dim
+            if embedding_results and len(embedding_results[0].dense) != expected_dim:
+                raise RuntimeError(
+                    f"Provider dense_dim ({expected_dim}) differs from actual vector dimension "
+                    f"({len(embedding_results[0].dense)})"
+                )
 
-            # 6. Idempotent cleanup: delete old chunks for this document
-            self.vector_store.delete_document_chunks(doc.id)
-            session.execute(
-                delete(DocumentChunkRecord).where(DocumentChunkRecord.document_id == doc.id)
-            )
+            # 4. Ensure collection exists and schema matches
+            self.vector_store.ensure_collection(dense_dim=expected_dim)
 
-            # 7. Convert to VectorStoreChunk and upsert into Qdrant
+            # 5. Convert to VectorStoreChunk and upsert new index version
             vs_chunks: list[VectorStoreChunk] = []
             db_chunk_records: list[DocumentChunkRecord] = []
 
@@ -134,6 +156,7 @@ class DocumentIndexingService:
                     document_id=chunk.document_id,
                     page_number=chunk.page_number,
                     redaction_version=chunk.redaction_version,
+                    index_version=target_version,
                     chunk_sequence=chunk.chunk_sequence,
                     masked_text=chunk.masked_text,
                     char_start=chunk.char_start,
@@ -155,6 +178,7 @@ class DocumentIndexingService:
                         document_id=doc.id,
                         page_number=chunk.page_number,
                         chunk_sequence=chunk.chunk_sequence,
+                        index_version=target_version,
                         chunk_id=chunk.chunk_id,
                         char_start=chunk.char_start,
                         char_end=chunk.char_end,
@@ -163,13 +187,48 @@ class DocumentIndexingService:
                 )
 
             self.vector_store.upsert_chunks(vs_chunks)
-            session.add_all(db_chunk_records)
 
-            # 8. Mark document as INDEXED
+            # 6. Verify expected point IDs and point count in vector store
+            point_ids = [c.point_id for c in vs_chunks]
+            points_verified = self.vector_store.verify_points(
+                point_ids=point_ids,
+                tenant_id=tenant_id,
+            )
+            if not points_verified:
+                raise VectorStoreError(
+                    f"Index verification failed: upserted points for document '{doc.id}' "
+                    f"version {target_version} could not be verified in vector store"
+                )
+
+            # 7. Atomically mark new version active in metadata database
+            session.execute(
+                delete(DocumentChunkRecord).where(DocumentChunkRecord.document_id == doc.id)
+            )
+            session.add_all(db_chunk_records)
+            doc.active_index_version = target_version
+            doc.index_cleanup_pending = False
             validate_transition(doc.status, DocumentState.INDEXED)
             doc.status = DocumentState.INDEXED
-            completed_at = datetime.now(UTC).isoformat()
+            session.commit()
+            session.refresh(doc)
 
+            # 8. Delete stale points from older versions
+            try:
+                self.vector_store.delete_stale_chunks(
+                    document_id=doc.id,
+                    tenant_id=tenant_id,
+                    active_version=target_version,
+                )
+            except Exception as stale_err:
+                logger.warning(
+                    "Stale chunk deletion failed for doc '%s': %s. Marking cleanup pending.",
+                    doc.id,
+                    stale_err,
+                )
+                doc.index_cleanup_pending = True
+                session.commit()
+
+            completed_at = datetime.now(UTC).isoformat()
             record_audit_event(
                 session=session,
                 actor_id=actor_id,
@@ -179,19 +238,18 @@ class DocumentIndexingService:
                 details={
                     "tenant_id": tenant_id,
                     "chunk_count": len(all_chunks),
-                    "redaction_version": doc.version,
+                    "active_index_version": target_version,
                     "evidence_hash": doc.sha256[:16],
                 },
             )
-
             session.commit()
-            session.refresh(doc)
 
             return IndexingResult(
                 document_id=doc.id,
                 status=doc.status,
                 chunk_count=len(all_chunks),
-                redaction_version=doc.version,
+                redaction_version=target_version,
+                active_index_version=target_version,
                 tenant_id=tenant_id,
                 completed_at=completed_at,
             )
@@ -199,7 +257,6 @@ class DocumentIndexingService:
         except Exception as err:
             logger.error("Failed to index document '%s': %s", doc.id, err)
             session.rollback()
-            # Set to INDEX_FAILED in a clean transaction
             doc_fail = session.scalar(select(DocumentRecord).where(DocumentRecord.id == doc.id))
             if doc_fail:
                 doc_fail.status = DocumentState.INDEX_FAILED
@@ -209,7 +266,11 @@ class DocumentIndexingService:
                     event_type="DOCUMENT_INDEXING_FAILED",
                     resource_type="document",
                     resource_id=doc_fail.id,
-                    details={"error": str(err)[:200]},
+                    details={
+                        "target_version": target_version,
+                        "previous_active_version": previous_active_version,
+                        "error": str(err)[:200],
+                    },
                 )
                 session.commit()
             raise

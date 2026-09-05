@@ -208,6 +208,7 @@ export interface IndexingStatus {
   status: string;
   chunk_count: number;
   redaction_version: number;
+  active_index_version?: number | null;
   tenant_id: string;
   collection_name: string;
   completed_at?: string | null;
@@ -223,12 +224,15 @@ export interface RetrievalEvidenceItem {
   page_number: number;
   chunk_id: string;
   evidence_hash: string;
+  masked_content_hash: string;
   redaction_version: number;
+  index_version: number;
   citation_label: string;
 }
 
 export interface RetrievalResponse {
-  query_hash: string;
+  query_length: number;
+  duration_ms: number;
   tenant_id: string;
   top_k: number;
   total_found: number;

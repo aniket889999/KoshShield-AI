@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from pathlib import Path
@@ -16,25 +17,64 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
     """Local-only, air-gapped BGE-M3 embedding provider using FlagEmbedding.
 
     Guarantees:
-    - Never contacts Hugging Face or any remote service at runtime.
-    - Loads weights strictly from local disk.
+    - Never contacts Hugging Face or remote services at runtime (HF_HUB_OFFLINE=1).
+    - Strictly rejects URLs or remote Hugging Face repository IDs.
+    - Dynamically obtains and verifies dimensions from local config and real model output.
     - Reports truthful readiness; raises ModelUnavailableError if unavailable.
     """
 
     def __init__(
         self,
-        model_dir: Path | None,
+        model_dir: Path | str | None,
         device: str = "cpu",
         batch_size: int = 16,
     ) -> None:
-        self.model_dir = Path(model_dir) if model_dir else None
+        # Enforce offline flags immediately upon instantiation
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
         self.device = device
         self.batch_size = batch_size
         self._model: Any | None = None
+        self._configured_dim: int | None = None
+        self._validated_dim: int | None = None
+
+        if model_dir:
+            model_str = str(model_dir).strip()
+            # Explicitly reject URLs or remote HF repo IDs
+            is_url = model_str.startswith(("http://", "https://", "ftp://"))
+            is_remote_repo = (
+                not os.path.exists(model_str)
+                and "/" in model_str
+                and not model_str.startswith(("/", "."))
+            )
+            if is_url or is_remote_repo:
+                raise ValueError(
+                    f"Remote model identifiers and URLs are prohibited in air-gapped mode: "
+                    f"'{model_str}'. Must provide a valid local directory path."
+                )
+            self.model_dir: Path | None = Path(model_str)
+            self._read_config_dim()
+        else:
+            self.model_dir = None
+
+    def _read_config_dim(self) -> None:
+        if not self.model_dir or not self.model_dir.is_dir():
+            return
+        config_path = self.model_dir / "config.json"
+        if config_path.is_file():
+            try:
+                data = json.loads(config_path.read_text(encoding="utf-8"))
+                dim = data.get("hidden_size") or data.get("dim") or data.get("d_model")
+                if isinstance(dim, int):
+                    self._configured_dim = dim
+            except Exception as err:
+                logger.warning("Could not parse BGE-M3 config.json: %s", err)
 
     @property
     def dense_dim(self) -> int:
-        return 1024
+        return self._validated_dim or self._configured_dim or 1024
 
     def is_available(self) -> tuple[bool, str]:
         if not self.model_dir:
@@ -44,13 +84,13 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             )
 
         if not self.model_dir.exists() or not self.model_dir.is_dir():
-            return False, f"BGE-M3 directory does not exist: {self.model_dir}"
+            return False, f"BGE-M3 directory does not exist on local disk: {self.model_dir}"
 
         config_path = self.model_dir / "config.json"
         if not config_path.exists():
             return False, f"BGE-M3 model config missing in: {self.model_dir}"
 
-        # Verify weight files exist
+        # Verify local weight files exist
         has_weights = any(
             (self.model_dir / name).exists()
             for name in ["model.safetensors", "pytorch_model.bin", "model.onnx"]
@@ -74,9 +114,9 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             raise ModelUnavailableError(f"Local BGE-M3 model is unavailable: {reason}")
 
         try:
-            # Enforce strict offline operation
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
             from FlagEmbedding import BGEM3FlagModel
 
@@ -93,11 +133,7 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
 
     @staticmethod
     def _format_sparse(lexical_dict: dict[Any, float]) -> tuple[list[int], list[float]]:
-        """Converts FlagEmbedding lexical_weights dictionary into Qdrant sparse
-        indices and values.
-        """
         indices: list[int] = []
-
         values: list[float] = []
 
         for key, val in lexical_dict.items():
@@ -106,14 +142,11 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             elif isinstance(key, str) and key.isdigit():
                 idx = int(key)
             else:
-                # Deterministic token string hash within positive 31-bit integer range
                 idx = abs(hash(str(key))) % (2**31 - 1)
             indices.append(idx)
             values.append(float(val))
 
-        # Qdrant requires sparse vector indices to be sorted and unique
         if indices:
-            # Aggregate any duplicate indices
             combined: dict[int, float] = {}
             for idx, val in zip(indices, values, strict=False):
                 combined[idx] = max(combined.get(idx, 0.0), val)
@@ -145,6 +178,16 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             dense_list = (
                 dense_vecs[i].tolist() if hasattr(dense_vecs[i], "tolist") else list(dense_vecs[i])
             )
+
+            # Tri-point verification: validate actual output vector dimension against configured dim
+            actual_dim = len(dense_list)
+            if self._configured_dim is not None and actual_dim != self._configured_dim:
+                raise ModelUnavailableError(
+                    f"Embedding dimension mismatch: local config declared {self._configured_dim}, "
+                    f"but model produced {actual_dim} dimensions."
+                )
+            self._validated_dim = actual_dim
+
             sparse_dict = sparse_weights[i] if i < len(sparse_weights) else {}
             s_indices, s_values = self._format_sparse(sparse_dict)
             results.append(

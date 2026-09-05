@@ -1,5 +1,5 @@
-import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,13 +26,16 @@ class EvidenceItem:
     page_number: int
     chunk_id: str
     evidence_hash: str
+    masked_content_hash: str
     redaction_version: int
+    index_version: int
     citation_label: str
 
 
 @dataclass
 class RetrievalEvidencePack:
-    query_hash: str
+    query_length: int
+    duration_ms: float
     tenant_id: str
     top_k: int
     total_found: int
@@ -41,7 +44,6 @@ class RetrievalEvidencePack:
 
 class HybridRetrievalService:
     """Local hybrid retrieval service combining dense and sparse BGE-M3 representations
-
     with Reciprocal Rank Fusion (RRF) and verifiable citations.
     """
 
@@ -65,6 +67,8 @@ class HybridRetrievalService:
         session: Session | None = None,
         actor_id: str = "demo-user",
     ) -> RetrievalEvidencePack:
+        start_time = time.perf_counter()
+
         clean_query = query.strip()
         if len(clean_query) < 2:
             raise ValueError("Search query must be at least 2 characters long")
@@ -72,12 +76,11 @@ class HybridRetrievalService:
             raise ValueError("Search query cannot exceed 500 characters")
 
         top_k = max(1, min(top_k, 50))
-        query_hash = hashlib.sha256(clean_query.encode("utf-8")).hexdigest()
 
         # 1. Embed query
         query_embedding = self.embedding_provider.embed_query(clean_query)
 
-        # 2. Retrieve dense candidates
+        # 2. Retrieve dense candidates with mandatory tenant filter
         dense_hits = self.vector_store.search_dense(
             query_vector=query_embedding.dense,
             tenant_id=tenant_id,
@@ -86,7 +89,7 @@ class HybridRetrievalService:
             limit=top_k * 3,
         )
 
-        # 3. Retrieve sparse candidates
+        # 3. Retrieve sparse candidates with mandatory tenant filter
         sparse_hits = self.vector_store.search_sparse(
             indices=query_embedding.sparse_indices,
             values=query_embedding.sparse_values,
@@ -122,18 +125,20 @@ class HybridRetrievalService:
             fused_scores.keys(), key=lambda cid: fused_scores[cid], reverse=True
         )[:top_k]
 
-        # 6. Build EvidenceItems with verifiable citations
+        # 6. Build EvidenceItems with complete SHA-256 evidence hashes and citations
         evidence_items: list[EvidenceItem] = []
         for rank, cid in enumerate(sorted_chunk_ids, start=1):
             payload = payload_map[cid]
             doc_filename = payload.get("document_filename", "Document")
             page_num = int(payload.get("page_number", 1))
             ev_hash = str(payload.get("document_evidence_hash", ""))
-            short_ev = ev_hash[:8] if ev_hash else "verified"
+            masked_hash = str(payload.get("masked_content_hash", ""))
+            short_ev = ev_hash[:12] if ev_hash else "verified"
             red_version = int(payload.get("redaction_version", 1))
+            idx_version = int(payload.get("index_version", red_version))
 
+            # Display label uses shortened hash for UI readability; full hash is in evidence_hash
             citation = f"[Document: {doc_filename} | Page: {page_num} | Evidence: {short_ev}]"
-
             sources_list = sorted(hit_sources.get(cid, set()))
 
             evidence_items.append(
@@ -147,14 +152,17 @@ class HybridRetrievalService:
                     page_number=page_num,
                     chunk_id=cid,
                     evidence_hash=ev_hash,
+                    masked_content_hash=masked_hash,
                     redaction_version=red_version,
+                    index_version=idx_version,
                     citation_label=citation,
                 )
             )
 
-        # 7. Privacy-safe audit (strictly no raw query string stored)
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+
+        # 7. Privacy-safe audit: strictly metadata only; no raw query, no query hash, no text
         if session is not None:
-            top_score = evidence_items[0].fused_score if evidence_items else 0.0
             record_audit_event(
                 session=session,
                 actor_id=actor_id,
@@ -162,17 +170,23 @@ class HybridRetrievalService:
                 resource_type="retrieval",
                 resource_id=None,
                 details={
+                    "actor_id": actor_id,
                     "tenant_id": tenant_id,
-                    "query_hash": query_hash,
                     "query_length": len(clean_query),
+                    "top_k": top_k,
+                    "permitted_document_ids": permitted_document_ids,
+                    "classification": classification,
+                    "result_chunk_ids": [item.chunk_id for item in evidence_items],
                     "result_count": len(evidence_items),
-                    "top_fused_score": top_score,
+                    "duration_ms": round(duration_ms, 2),
+                    "policy_result": "ALLOWED",
                 },
             )
             session.commit()
 
         return RetrievalEvidencePack(
-            query_hash=query_hash,
+            query_length=len(clean_query),
+            duration_ms=round(duration_ms, 2),
             tenant_id=tenant_id,
             top_k=top_k,
             total_found=len(evidence_items),
