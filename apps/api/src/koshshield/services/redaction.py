@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from koshshield.models import (
     DocumentPageRecord,
     DocumentRecord,
     DocumentState,
+    DocumentVisualRegionRecord,
     ExtractionJob,
     FindingStatus,
     RedactionFinding,
@@ -24,7 +26,9 @@ from koshshield.security.pii import (
 )
 from koshshield.security.vault import EncryptedVault
 from koshshield.services.audit import append_audit_event
+from koshshield.services.extraction.interfaces import ExtractionError
 from koshshield.services.extraction.service import UnifiedDocumentExtractor
+from koshshield.services.retrieval.visuals import build_visual_region_drafts
 
 
 class RedactionError(Exception):
@@ -99,6 +103,11 @@ def start_document_extraction(
             content=original_bytes,
             media_type=document.media_type,
         )
+        page_images = _extract_page_images(
+            content=original_bytes,
+            media_type=document.media_type,
+            max_pages=settings.max_extraction_pages,
+        )
 
         pii_detector = IndianPiiDetector(salt=settings.pii_salt)
         total_findings = 0
@@ -118,6 +127,15 @@ def start_document_extraction(
         )
         for f in existing_findings:
             session.delete(f)
+        existing_regions = list(
+            session.scalars(
+                select(DocumentVisualRegionRecord).where(
+                    DocumentVisualRegionRecord.document_id == document_id
+                )
+            )
+        )
+        for region in existing_regions:
+            session.delete(region)
 
         for page in result.pages:
             # 1. Store raw extracted text in encrypted vault only
@@ -130,6 +148,20 @@ def start_document_extraction(
                 plaintext=page_text_bytes,
             )
 
+            page_image = page_images.get(page.page_number)
+            encrypted_page_image_path: Path | None = None
+            page_image_hash: str | None = None
+            page_image_media_type: str | None = None
+            if page_image is not None:
+                page_image_bytes, page_image_media_type = page_image
+                page_image_hash = hashlib.sha256(page_image_bytes).hexdigest()
+                page_image_artifact_id = f"{document_id}_p{page.page_number}_image"
+                encrypted_page_image_path = vault.encrypt(
+                    document_id=page_image_artifact_id,
+                    evidence_hash=page_image_hash,
+                    plaintext=page_image_bytes,
+                )
+
             # 2. Record page metadata in database (no raw text)
             page_record = DocumentPageRecord(
                 id=str(uuid4()),
@@ -140,6 +172,11 @@ def start_document_extraction(
                 extraction_method=page.extraction_method,
                 text_hash=page_text_hash,
                 encrypted_artifact_path=str(encrypted_page_path),
+                page_image_sha256=page_image_hash,
+                page_image_media_type=page_image_media_type,
+                encrypted_page_image_path=(
+                    str(encrypted_page_image_path) if encrypted_page_image_path else None
+                ),
                 masked_text=None,
                 masked_text_hash=None,
             )
@@ -413,6 +450,41 @@ def approve_redactions(
         page.masked_text = masked_text
         page.masked_text_hash = masked_hash
 
+    existing_regions = list(
+        session.scalars(
+            select(DocumentVisualRegionRecord).where(
+                DocumentVisualRegionRecord.document_id == document_id
+            )
+        )
+    )
+    for region in existing_regions:
+        session.delete(region)
+
+    for page in pages:
+        if not page.masked_text:
+            continue
+        for draft in build_visual_region_drafts(
+            masked_text=page.masked_text,
+            page_number=page.page_number,
+            width=page.width,
+            height=page.height,
+            image_sha256=page.page_image_sha256,
+        ):
+            session.add(
+                DocumentVisualRegionRecord(
+                    id=str(uuid4()),
+                    document_id=document_id,
+                    page_number=page.page_number,
+                    region_sequence=draft.region_sequence,
+                    region_type=draft.region_type,
+                    source=draft.source,
+                    bbox_json=draft.bbox_json,
+                    caption_text=draft.caption_text,
+                    caption_hash=draft.caption_hash,
+                    image_sha256=draft.image_sha256,
+                )
+            )
+
     # Transition to INDEX_READY
     validate_transition(document.status, DocumentState.INDEX_READY)
     document.status = DocumentState.INDEX_READY
@@ -445,3 +517,27 @@ def approve_redactions(
     session.commit()
     session.refresh(document)
     return document
+
+
+def _extract_page_images(
+    *,
+    content: bytes,
+    media_type: str,
+    max_pages: int,
+) -> dict[int, tuple[bytes, str]]:
+    if media_type == "application/pdf":
+        doc = pymupdf.open(stream=content, filetype="pdf")
+        if len(doc) > max_pages:
+            raise ExtractionError(
+                f"Document page count ({len(doc)}) exceeds configured limit ({max_pages})"
+            )
+        rendered: dict[int, tuple[bytes, str]] = {}
+        for idx in range(len(doc)):
+            pix = doc[idx].get_pixmap(dpi=120, alpha=False)
+            rendered[idx + 1] = (pix.tobytes("png"), "image/png")
+        return rendered
+
+    if media_type in {"image/png", "image/jpeg"}:
+        return {1: (content, media_type)}
+
+    return {}

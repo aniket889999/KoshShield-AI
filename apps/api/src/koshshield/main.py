@@ -27,12 +27,33 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 for col, col_def in [
                     ("version", "INTEGER DEFAULT 1"),
                     ("updated_at", "DATETIME"),
+                    ("active_index_version", "INTEGER"),
+                    ("index_cleanup_pending", "BOOLEAN DEFAULT 0"),
                 ]:
                     try:
                         conn.execute(text(f"ALTER TABLE documents ADD COLUMN {col} {col_def}"))
                         conn.commit()
                     except Exception:
                         pass
+                for col, col_def in [
+                    ("page_image_sha256", "VARCHAR(64)"),
+                    ("page_image_media_type", "VARCHAR(80)"),
+                    ("encrypted_page_image_path", "TEXT"),
+                ]:
+                    try:
+                        conn.execute(text(f"ALTER TABLE document_pages ADD COLUMN {col} {col_def}"))
+                        conn.commit()
+                    except Exception:
+                        pass
+                try:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE document_chunks ADD COLUMN index_version INTEGER DEFAULT 1"
+                        )
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
     yield
 
 

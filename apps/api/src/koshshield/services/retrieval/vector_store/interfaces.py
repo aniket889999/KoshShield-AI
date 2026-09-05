@@ -21,6 +21,7 @@ class VectorStoreChunk:
     indexed_at: str
     dense_vector: list[float]
     index_version: int = 1
+    visual_regions: list[dict[str, Any]] = field(default_factory=list)
     sparse_indices: list[int] = field(default_factory=list)
     sparse_values: list[float] = field(default_factory=list)
 
@@ -41,6 +42,7 @@ class VectorStoreChunk:
             "classification": self.classification,
             "document_filename": self.document_filename,
             "indexed_at": self.indexed_at,
+            "visual_regions": self.visual_regions,
         }
 
 

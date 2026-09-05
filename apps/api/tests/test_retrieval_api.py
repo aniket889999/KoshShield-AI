@@ -1,4 +1,7 @@
+import hashlib
+import os
 import uuid
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,10 +11,12 @@ from koshshield.api.routes.retrieval import get_embedding_provider, get_vector_s
 from koshshield.database import engine
 from koshshield.main import app
 from koshshield.models import DocumentPageRecord, DocumentRecord, DocumentState
+from koshshield.security.vault import EncryptedVault
 from koshshield.services.retrieval.embeddings.deterministic_fake import (
     DeterministicEmbeddingProvider,
 )
 from koshshield.services.retrieval.vector_store import InMemoryVectorStore
+from koshshield.services.retrieval.vector_store.interfaces import VectorStoreChunk
 
 
 @pytest.fixture
@@ -108,3 +113,94 @@ def test_document_indexing_lifecycle_endpoint(
     )
     assert spoofed_res.status_code == 200
     assert spoofed_res.json()["tenant_id"] == "tenant-authorized"
+
+
+def test_visual_evidence_page_image_requires_tenant_scoped_chunk(
+    client: TestClient,
+    mock_dependencies: tuple[DeterministicEmbeddingProvider, InMemoryVectorStore],
+) -> None:
+    embedding_provider, vector_store = mock_dependencies
+    doc_id = str(uuid.uuid4())
+    chunk_id = str(uuid.uuid4())
+    evidence_hash = "e" * 64
+    image_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?"
+        b"\x00\x05\xfe\x02\xfeA\xde\xfc\x9b\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    image_hash = hashlib.sha256(image_bytes).hexdigest()
+    vault = EncryptedVault(
+        Path(os.environ["KOSHSHIELD_VAULT_DIR"]),
+        os.environ["KOSHSHIELD_MASTER_KEY_BASE64"],
+    )
+    image_path = vault.encrypt(
+        document_id=f"{doc_id}_p1_image",
+        evidence_hash=image_hash,
+        plaintext=image_bytes,
+    )
+
+    with Session(bind=engine) as session:
+        doc = DocumentRecord(
+            id=doc_id,
+            filename="visual-evidence.pdf",
+            media_type="application/pdf",
+            size_bytes=1024,
+            sha256=evidence_hash,
+            vault_path="vault/doc.ksh",
+            status=DocumentState.INDEXED,
+            active_index_version=2,
+        )
+        page = DocumentPageRecord(
+            id=str(uuid.uuid4()),
+            document_id=doc_id,
+            page_number=1,
+            width=612,
+            height=792,
+            extraction_method="native_pdf",
+            text_hash="text-hash",
+            encrypted_artifact_path="vault/page-text.ksh",
+            page_image_sha256=image_hash,
+            page_image_media_type="image/png",
+            encrypted_page_image_path=str(image_path),
+            masked_text="Masked table content",
+        )
+        session.add_all([doc, page])
+        session.commit()
+
+    emb = embedding_provider.embed_query("Masked table content")
+    vector_store.upsert_chunks(
+        [
+            VectorStoreChunk(
+                point_id=chunk_id,
+                chunk_id=chunk_id,
+                tenant_id="default",
+                document_id=doc_id,
+                page_number=1,
+                redaction_version=2,
+                index_version=2,
+                chunk_sequence=0,
+                masked_text="Masked table content",
+                char_start=0,
+                char_end=20,
+                masked_content_hash="m" * 64,
+                document_evidence_hash=evidence_hash,
+                classification="CONFIDENTIAL",
+                document_filename="visual-evidence.pdf",
+                indexed_at="2026-09-06T12:00:00Z",
+                dense_vector=emb.dense,
+                sparse_indices=emb.sparse_indices,
+                sparse_values=emb.sparse_values,
+            )
+        ]
+    )
+
+    allowed = client.get(f"/api/v1/retrieval/evidence/{chunk_id}/page-image")
+    assert allowed.status_code == 200
+    assert allowed.headers["content-type"] == "image/png"
+    assert allowed.content == image_bytes
+
+    blocked = client.get(
+        f"/api/v1/retrieval/evidence/{chunk_id}/page-image",
+        headers={"X-Tenant-ID": "other-tenant"},
+    )
+    assert blocked.status_code == 404

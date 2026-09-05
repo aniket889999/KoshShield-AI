@@ -10,6 +10,7 @@ from koshshield.models import (
     DocumentChunkRecord,
     DocumentRecord,
     DocumentState,
+    DocumentVisualRegionRecord,
     validate_transition,
 )
 from koshshield.services.audit import record_audit_event
@@ -124,8 +125,18 @@ class DocumentIndexingService:
             if not all_chunks:
                 raise ValueError("Document yielded no text chunks for indexing")
 
+            visual_regions_by_page = self._load_visual_regions_by_page(
+                session=session,
+                document_id=doc.id,
+            )
+
             # 3. Generate local BGE-M3 embeddings
-            texts = [c.masked_text for c in all_chunks]
+            texts = [
+                self._build_embedding_text(
+                    c.masked_text, visual_regions_by_page.get(c.page_number, [])
+                )
+                for c in all_chunks
+            ]
             embedding_results = self.embedding_provider.embed_texts(texts)
             if len(embedding_results) != len(all_chunks):
                 raise RuntimeError(
@@ -167,6 +178,7 @@ class DocumentIndexingService:
                     document_filename=chunk.document_filename,
                     indexed_at=chunk.indexed_at,
                     dense_vector=emb.dense,
+                    visual_regions=visual_regions_by_page.get(chunk.page_number, []),
                     sparse_indices=emb.sparse_indices,
                     sparse_values=emb.sparse_values,
                 )
@@ -274,3 +286,51 @@ class DocumentIndexingService:
                 )
                 session.commit()
             raise
+
+    @staticmethod
+    def _load_visual_regions_by_page(
+        *,
+        session: Session,
+        document_id: str,
+    ) -> dict[int, list[dict[str, object]]]:
+        records = list(
+            session.scalars(
+                select(DocumentVisualRegionRecord)
+                .where(DocumentVisualRegionRecord.document_id == document_id)
+                .order_by(
+                    DocumentVisualRegionRecord.page_number.asc(),
+                    DocumentVisualRegionRecord.region_sequence.asc(),
+                )
+            )
+        )
+        regions_by_page: dict[int, list[dict[str, object]]] = {}
+        for record in records:
+            bbox_payload = record.bbox_json if isinstance(record.bbox_json, dict) else {}
+            bbox = bbox_payload.get("bbox") if isinstance(bbox_payload.get("bbox"), list) else None
+            regions_by_page.setdefault(record.page_number, []).append(
+                {
+                    "region_id": record.id,
+                    "region_type": record.region_type,
+                    "page_number": record.page_number,
+                    "bbox": bbox,
+                    "page_width": bbox_payload.get("page_width"),
+                    "page_height": bbox_payload.get("page_height"),
+                    "caption": record.caption_text,
+                    "caption_hash": record.caption_hash,
+                    "image_sha256": record.image_sha256,
+                    "image_available": bool(record.image_sha256),
+                    "source": record.source,
+                }
+            )
+        return regions_by_page
+
+    @staticmethod
+    def _build_embedding_text(masked_text: str, visual_regions: list[dict[str, object]]) -> str:
+        captions = [
+            str(region.get("caption", "")).strip()
+            for region in visual_regions
+            if str(region.get("caption", "")).strip()
+        ]
+        if not captions:
+            return masked_text
+        return f"{masked_text}\n\nVisual captions:\n" + "\n".join(captions)

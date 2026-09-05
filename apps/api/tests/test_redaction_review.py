@@ -3,7 +3,7 @@ from sqlalchemy import select
 from test_document_lifecycle import create_synthetic_pdf_with_pii
 
 from koshshield.database import SessionLocal
-from koshshield.models import DocumentPageRecord
+from koshshield.models import DocumentPageRecord, DocumentVisualRegionRecord
 
 
 def test_redaction_review_workflow_and_approval(client: TestClient) -> None:
@@ -90,6 +90,21 @@ def test_redaction_review_workflow_and_approval(client: TestClient) -> None:
         assert "[AADHAAR_REDACTED]" in page.masked_text
         assert "[PAN_REDACTED]" in page.masked_text
         assert "[PHONE_REDACTED]" in page.masked_text
+        assert page.page_image_sha256 is not None
+        assert page.page_image_media_type == "image/png"
+        assert page.encrypted_page_image_path is not None
+
+        visual_regions = list(
+            session.scalars(
+                select(DocumentVisualRegionRecord).where(
+                    DocumentVisualRegionRecord.document_id == doc_id
+                )
+            )
+        )
+        assert visual_regions
+        captions = "\n".join(region.caption_text for region in visual_regions)
+        assert "9876543210" not in captions
+        assert "[PHONE_REDACTED]" in captions
 
     # Verify audit integrity remains valid
     integrity_res = client.get("/api/v1/audit/integrity")

@@ -228,6 +228,21 @@ export interface RetrievalEvidenceItem {
   redaction_version: number;
   index_version: number;
   citation_label: string;
+  visual_regions: RetrievalVisualRegion[];
+}
+
+export interface RetrievalVisualRegion {
+  region_id: string;
+  region_type: string;
+  page_number: number;
+  bbox?: number[] | null;
+  page_width?: number | null;
+  page_height?: number | null;
+  caption: string;
+  caption_hash: string;
+  image_sha256?: string | null;
+  image_available: boolean;
+  source: string;
 }
 
 export interface RetrievalResponse {
@@ -283,4 +298,19 @@ export function searchRetrieval(params: {
     },
     body: JSON.stringify(params),
   });
+}
+
+export async function fetchVisualEvidenceImage(chunkId: string) {
+  const response = await fetch(
+    `${API_BASE_URL}/retrieval/evidence/${encodeURIComponent(chunkId)}/page-image`,
+    {
+      headers: { "X-Tenant-ID": "default" },
+      cache: "no-store",
+    }
+  );
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `Request failed with status ${response.status}`);
+  }
+  return response.blob();
 }

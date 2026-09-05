@@ -113,8 +113,29 @@ class DocumentPageRecord(Base):
     extraction_method: Mapped[str] = mapped_column(String(40))
     text_hash: Mapped[str] = mapped_column(String(64))
     encrypted_artifact_path: Mapped[str] = mapped_column(Text)
+    page_image_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    page_image_media_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    encrypted_page_image_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     masked_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     masked_text_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DocumentVisualRegionRecord(Base):
+    __tablename__ = "document_visual_regions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    page_number: Mapped[int] = mapped_column(Integer)
+    region_sequence: Mapped[int] = mapped_column(Integer)
+    region_type: Mapped[str] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(80))
+    bbox_json: Mapped[Any | None] = mapped_column(JSON, nullable=True)
+    caption_text: Mapped[str] = mapped_column(Text)
+    caption_hash: Mapped[str] = mapped_column(String(64))
+    image_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

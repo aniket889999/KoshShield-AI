@@ -127,6 +127,20 @@ class RetrievalSearchRequest(BaseModel):
     classification: str | None = None
 
 
+class RetrievalVisualRegion(BaseModel):
+    region_id: str
+    region_type: str
+    page_number: int
+    bbox: list[float] | None = None
+    page_width: float | None = None
+    page_height: float | None = None
+    caption: str
+    caption_hash: str
+    image_sha256: str | None = None
+    image_available: bool
+    source: str
+
+
 class RetrievalEvidenceItem(BaseModel):
     rank: int
     fused_score: float
@@ -141,6 +155,7 @@ class RetrievalEvidenceItem(BaseModel):
     redaction_version: int
     index_version: int
     citation_label: str
+    visual_regions: list[RetrievalVisualRegion] = []
 
 
 class RetrievalResponse(BaseModel):

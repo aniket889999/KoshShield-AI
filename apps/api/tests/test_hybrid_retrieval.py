@@ -52,6 +52,21 @@ def test_hybrid_search_rrf_and_citations(db_session: Session) -> None:
         document_filename="Tender-2026.pdf",
         indexed_at="2026-09-04T12:00:00Z",
         dense_vector=emb_1.dense,
+        visual_regions=[
+            {
+                "region_id": "visual-region-1",
+                "region_type": "TABLE_OR_FORM_REGION",
+                "page_number": 3,
+                "bbox": [10.0, 20.0, 300.0, 180.0],
+                "page_width": 612.0,
+                "page_height": 792.0,
+                "caption": "Structured masked tender table with approval columns",
+                "caption_hash": "e" * 64,
+                "image_sha256": "f" * 64,
+                "image_available": True,
+                "source": "masked_layout_heuristic",
+            }
+        ],
         sparse_indices=emb_1.sparse_indices,
         sparse_values=emb_1.sparse_values,
     )
@@ -100,8 +115,12 @@ def test_hybrid_search_rrf_and_citations(db_session: Session) -> None:
     assert top_result.page_number == 3
     assert top_result.citation_label.startswith("[Document: Tender-2026.pdf | Page: 3 | Evidence:")
     assert "dense" in top_result.sources
+    assert "visual-caption" in top_result.sources
     assert len(top_result.evidence_hash) == 64
     assert len(top_result.masked_content_hash) == 64
+    assert len(top_result.visual_regions) == 1
+    assert top_result.visual_regions[0].region_type == "TABLE_OR_FORM_REGION"
+    assert top_result.visual_regions[0].bbox == [10.0, 20.0, 300.0, 180.0]
 
     # Check safe audit logging: raw query AND query hash must NOT be present
     import hashlib

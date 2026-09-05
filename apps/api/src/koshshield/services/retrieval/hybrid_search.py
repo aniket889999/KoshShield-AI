@@ -16,6 +16,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class VisualEvidenceRegion:
+    region_id: str
+    region_type: str
+    page_number: int
+    bbox: list[float] | None
+    page_width: float | None
+    page_height: float | None
+    caption: str
+    caption_hash: str
+    image_sha256: str | None
+    image_available: bool
+    source: str
+
+
+@dataclass
 class EvidenceItem:
     rank: int
     fused_score: float
@@ -30,6 +45,7 @@ class EvidenceItem:
     redaction_version: int
     index_version: int
     citation_label: str
+    visual_regions: list[VisualEvidenceRegion]
 
 
 @dataclass
@@ -140,6 +156,9 @@ class HybridRetrievalService:
             # Display label uses shortened hash for UI readability; full hash is in evidence_hash
             citation = f"[Document: {doc_filename} | Page: {page_num} | Evidence: {short_ev}]"
             sources_list = sorted(hit_sources.get(cid, set()))
+            visual_regions = _parse_visual_regions(payload)
+            if visual_regions:
+                sources_list = sorted({*sources_list, "visual-caption"})
 
             evidence_items.append(
                 EvidenceItem(
@@ -156,6 +175,7 @@ class HybridRetrievalService:
                     redaction_version=red_version,
                     index_version=idx_version,
                     citation_label=citation,
+                    visual_regions=visual_regions,
                 )
             )
 
@@ -192,3 +212,45 @@ class HybridRetrievalService:
             total_found=len(evidence_items),
             items=evidence_items,
         )
+
+
+def _parse_visual_regions(payload: dict[str, Any]) -> list[VisualEvidenceRegion]:
+    raw_regions = payload.get("visual_regions", [])
+    if not isinstance(raw_regions, list):
+        return []
+
+    parsed: list[VisualEvidenceRegion] = []
+    for raw in raw_regions:
+        if not isinstance(raw, dict):
+            continue
+        bbox = raw.get("bbox")
+        try:
+            safe_bbox = (
+                [float(v) for v in bbox[:4]] if isinstance(bbox, list) and len(bbox) >= 4 else None
+            )
+        except (TypeError, ValueError):
+            safe_bbox = None
+        page_width = raw.get("page_width")
+        page_height = raw.get("page_height")
+        try:
+            page_number = int(raw.get("page_number", payload.get("page_number", 1)))
+        except (TypeError, ValueError):
+            page_number = int(payload.get("page_number", 1))
+        parsed.append(
+            VisualEvidenceRegion(
+                region_id=str(raw.get("region_id", "")),
+                region_type=str(raw.get("region_type", "PAGE_IMAGE")),
+                page_number=page_number,
+                bbox=safe_bbox,
+                page_width=float(page_width) if page_width else None,
+                page_height=float(page_height) if page_height else None,
+                caption=str(raw.get("caption", "")),
+                caption_hash=str(raw.get("caption_hash", "")),
+                image_sha256=(
+                    str(raw.get("image_sha256")) if raw.get("image_sha256") is not None else None
+                ),
+                image_available=bool(raw.get("image_available", False)),
+                source=str(raw.get("source", "unknown")),
+            )
+        )
+    return parsed

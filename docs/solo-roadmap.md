@@ -39,12 +39,15 @@
 - Accurate benchmark separation: deterministic synthetic pipeline evaluation vs real-model integration (labeled NOT EXECUTED if weights/containers absent).
 - Interactive Intelligence console in Next.js with vector store telemetry, corpus indexing, and search.
 
-## Milestone 4: multimodal retrieval
+## Milestone 4: multimodal retrieval (MVP slice completed)
 
-- Page images and table/diagram crops.
-- Local visual descriptions and visual-caption retrieval.
-- Qwen3-VL receives only authorized top-ranked images.
-- Evidence viewer highlights the cited page region.
+- Encrypted page images are captured during local extraction for PDFs and image uploads.
+- Masked visual region records are generated only after human redaction approval.
+- Table/form and diagram/map regions are described through privacy-masked local captions.
+- Indexed chunks include visual captions for caption-enriched retrieval without storing raw visual text.
+- Page images are served only through a tenant-scoped evidence endpoint tied to an active retrieved chunk.
+- Intelligence console can open authorized page evidence and highlight the cited region.
+- Qwen3-VL answer generation remains future work; the implemented boundary ensures it receives only authorized visual evidence when added.
 
 ## Milestone 5: policy-gated agent
 

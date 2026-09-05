@@ -22,6 +22,7 @@ import {
   Fingerprint,
   Gauge,
   History,
+  Image as ImageIcon,
   KeyRound,
   Layers,
   Loader2,
@@ -40,11 +41,20 @@ import {
   UserCheck,
   X,
 } from "lucide-react";
-import { useMemo, useRef, useState, type ComponentType } from "react";
+import NextImage from "next/image";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentType,
+  type CSSProperties,
+} from "react";
 
 import {
   acceptHighConfidenceRedactions,
   approveRedactions,
+  fetchVisualEvidenceImage,
   getAuditIntegrity,
   getDocumentRedactions,
   getRetrievalStatus,
@@ -60,6 +70,8 @@ import {
   type DependencyStatus,
   type DocumentRecord,
   type RedactionFinding,
+  type RetrievalEvidenceItem,
+  type RetrievalVisualRegion,
 } from "@/lib/api";
 
 
@@ -142,6 +154,42 @@ function FindingTypeIcon({ type }: { type: string }) {
     default:
       return <ShieldAlert size={15} />;
   }
+}
+
+interface VisualEvidenceSelection {
+  item: RetrievalEvidenceItem;
+  region: RetrievalVisualRegion;
+  imageUrl: string;
+}
+
+function regionLabel(regionType: string) {
+  return regionType
+    .toLowerCase()
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function sourceLabel(source: string) {
+  if (source === "dense") return "Dense vector";
+  if (source === "sparse") return "Sparse lexical";
+  if (source === "visual-caption") return "Visual caption";
+  return source;
+}
+
+function regionHighlightStyle(region: RetrievalVisualRegion): CSSProperties | undefined {
+  const [x0, y0, x1, y1] = region.bbox ?? [];
+  const pageWidth = region.page_width ?? 0;
+  const pageHeight = region.page_height ?? 0;
+  if (!region.bbox || pageWidth <= 0 || pageHeight <= 0) return undefined;
+
+  return {
+    left: `${(x0 / pageWidth) * 100}%`,
+    top: `${(y0 / pageHeight) * 100}%`,
+    width: `${((x1 - x0) / pageWidth) * 100}%`,
+    height: `${((y1 - y0) / pageHeight) * 100}%`,
+  };
 }
 
 export function OperationsConsole() {
@@ -264,6 +312,9 @@ export function OperationsConsole() {
   const [searchDocFilter, setSearchDocFilter] = useState("all");
   const [selectedIndexDocId, setSelectedIndexDocId] = useState("");
   const [copiedCitation, setCopiedCitation] = useState<string | null>(null);
+  const [visualEvidence, setVisualEvidence] = useState<VisualEvidenceSelection | null>(null);
+  const [visualEvidenceLoading, setVisualEvidenceLoading] = useState<string | null>(null);
+  const [visualEvidenceError, setVisualEvidenceError] = useState<string | null>(null);
 
   const retrievalStatusQuery = useQuery({
     queryKey: ["retrieval-status"],
@@ -297,9 +348,46 @@ export function OperationsConsole() {
     setTimeout(() => setCopiedCitation(null), 2500);
   };
 
+  useEffect(() => {
+    return () => {
+      if (visualEvidence?.imageUrl) {
+        URL.revokeObjectURL(visualEvidence.imageUrl);
+      }
+    };
+  }, [visualEvidence?.imageUrl]);
+
+  const handleOpenVisualEvidence = async (
+    item: RetrievalEvidenceItem,
+    region: RetrievalVisualRegion
+  ) => {
+    setVisualEvidenceError(null);
+    setVisualEvidenceLoading(region.region_id);
+    try {
+      const imageBlob = await fetchVisualEvidenceImage(item.chunk_id);
+      const imageUrl = URL.createObjectURL(imageBlob);
+      setVisualEvidence((previous) => {
+        if (previous?.imageUrl) URL.revokeObjectURL(previous.imageUrl);
+        return { item, region, imageUrl };
+      });
+    } catch (error) {
+      setVisualEvidenceError(error instanceof Error ? error.message : "Visual evidence unavailable");
+    } finally {
+      setVisualEvidenceLoading(null);
+    }
+  };
+
+  const handleCloseVisualEvidence = () => {
+    setVisualEvidence((previous) => {
+      if (previous?.imageUrl) URL.revokeObjectURL(previous.imageUrl);
+      return null;
+    });
+  };
+
   const handleSearchSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
+    handleCloseVisualEvidence();
+    setVisualEvidenceError(null);
     const permittedIds =
       searchDocFilter === "all" ? undefined : [searchDocFilter];
     searchMutation.mutate({
@@ -1430,7 +1518,7 @@ export function OperationsConsole() {
                               <div className="source-badges-group">
                                 {item.sources.map((s) => (
                                   <span key={s} className={`source-badge source-${s}`}>
-                                    {s === "dense" ? "Dense vector" : s === "sparse" ? "Sparse lexical" : s}
+                                    {sourceLabel(s)}
                                   </span>
                                 ))}
                               </div>
@@ -1457,6 +1545,36 @@ export function OperationsConsole() {
                             <p>{item.masked_snippet}</p>
                           </div>
 
+                          {item.visual_regions.length > 0 && (
+                            <div className="visual-region-strip">
+                              <div className="visual-region-strip-label">
+                                <ImageIcon size={14} />
+                                <span>{item.visual_regions.length} visual region(s)</span>
+                              </div>
+                              <div className="visual-region-buttons">
+                                {item.visual_regions.map((region) => (
+                                  <button
+                                    type="button"
+                                    key={region.region_id}
+                                    className="visual-region-button"
+                                    disabled={
+                                      !region.image_available ||
+                                      visualEvidenceLoading === region.region_id
+                                    }
+                                    onClick={() => handleOpenVisualEvidence(item, region)}
+                                  >
+                                    {visualEvidenceLoading === region.region_id ? (
+                                      <Loader2 size={13} className="spin-loader" />
+                                    ) : (
+                                      <Eye size={13} />
+                                    )}
+                                    <span>{regionLabel(region.region_type)}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
                           <footer className="evidence-card-footer">
                             <div className="meta-item">
                               <FileText size={13} />
@@ -1477,6 +1595,53 @@ export function OperationsConsole() {
                           </footer>
                         </article>
                       ))}
+
+                      {visualEvidenceError && (
+                        <div className="visual-evidence-error">
+                          <CircleAlert size={17} />
+                          <span>{visualEvidenceError}</span>
+                        </div>
+                      )}
+
+                      {visualEvidence && (
+                        <section className="visual-evidence-viewer" aria-label="Visual evidence">
+                          <div className="visual-evidence-copy">
+                            <span className="section-kicker">Authorized page evidence</span>
+                            <h3>{regionLabel(visualEvidence.region.region_type)}</h3>
+                            <p>{visualEvidence.region.caption}</p>
+                            <div className="visual-evidence-meta">
+                              <span>{visualEvidence.item.document_filename}</span>
+                              <span>Page {visualEvidence.region.page_number}</span>
+                              <span>
+                                Image: <code>{visualEvidence.region.image_sha256?.slice(0, 16)}...</code>
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="visual-evidence-close"
+                            onClick={handleCloseVisualEvidence}
+                            aria-label="Close visual evidence"
+                          >
+                            <X size={16} />
+                          </button>
+                          <div className="visual-evidence-image-frame">
+                            <NextImage
+                              src={visualEvidence.imageUrl}
+                              alt={`Page ${visualEvidence.region.page_number} evidence from ${visualEvidence.item.document_filename}`}
+                              width={Math.round(visualEvidence.region.page_width ?? 900)}
+                              height={Math.round(visualEvidence.region.page_height ?? 1200)}
+                              unoptimized
+                            />
+                            {regionHighlightStyle(visualEvidence.region) && (
+                              <span
+                                className="visual-region-highlight"
+                                style={regionHighlightStyle(visualEvidence.region)}
+                              />
+                            )}
+                          </div>
+                        </section>
+                      )}
                     </div>
                   )}
 

@@ -32,9 +32,8 @@ The implementation plan and architecture boundaries are documented in
 
 ## Development status
 
-Milestone 3 is implemented and security-hardened: masked BGE-M3 hybrid retrieval
-with the official version-pinned `qdrant-client` and cryptographic citations.
-It features:
+Milestone 4 now has a working multimodal-retrieval MVP slice on top of the
+Milestone 3 hardened retrieval base. It features:
 - Pre-indexing privacy gate ensuring zero unreviewed PII reaches retrieval stores.
 - Deterministic UUIDv5 chunk identities derived from tenant, full document ID, version, and content hash.
 - Fail-closed BGE-M3 embedding provider with dynamic dimension verification against Qdrant schema.
@@ -44,7 +43,13 @@ It features:
 - Unsalted query privacy auditing (query length and duration only; zero query text or digests stored).
 - Separated benchmarks: deterministic synthetic pipeline evaluation vs real-model integration.
 - Interactive Intelligence console in Next.js with real-time vector telemetry.
-Multimodal page/crop retrieval with Qwen3-VL is the next milestone.
+- Encrypted page images captured during local extraction.
+- Privacy-masked visual captions and table/form or diagram/map region metadata attached to indexed chunks.
+- Tenant-scoped visual evidence endpoint that serves page images only for active retrieved chunks.
+- Evidence viewer in the Intelligence console with cited-region highlighting.
+
+Qwen3-VL answer generation over authorized top-ranked images remains the next
+generation-layer task.
 
 ## Local quick start
 

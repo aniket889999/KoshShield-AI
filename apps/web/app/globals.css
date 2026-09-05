@@ -459,6 +459,7 @@ code { color: var(--navy-800); font-size: 9px; }
 }
 .source-dense { background: #e0f2fe; color: #0369a1; }
 .source-sparse { background: #fef3c7; color: #b45309; }
+.source-visual-caption { background: #dcfce7; color: #166534; }
 
 .citation-container { display: flex; align-items: center; gap: 6px; }
 .citation-code {
@@ -497,6 +498,141 @@ code { color: var(--navy-800); font-size: 9px; }
   white-space: pre-wrap;
 }
 
+.visual-region-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #d7e6df;
+  background: #f7fbf8;
+  border-radius: 5px;
+  padding: 9px 10px;
+}
+.visual-region-strip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green-700);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.visual-region-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.visual-region-button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #bddacb;
+  border-radius: 4px;
+  background: white;
+  color: var(--ink-700);
+  padding: 0 9px;
+  font-size: 10px;
+  font-weight: 800;
+}
+.visual-region-button:hover:not(:disabled) {
+  border-color: var(--green-700);
+  color: var(--green-700);
+}
+.visual-region-button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.visual-evidence-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #f4c2c2;
+  border-radius: 5px;
+  background: var(--red-100);
+  color: var(--red-700);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.visual-evidence-viewer {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(240px, .58fr) minmax(300px, 1fr);
+  gap: 16px;
+  border: 1px solid #bddacb;
+  border-radius: 6px;
+  background: #fbfefd;
+  padding: 16px;
+}
+.visual-evidence-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.visual-evidence-copy h3 {
+  margin: 0;
+  color: var(--ink-900);
+  font-size: 16px;
+}
+.visual-evidence-copy p {
+  margin: 0;
+  color: var(--ink-700);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.visual-evidence-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: auto;
+}
+.visual-evidence-meta span {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: white;
+  color: var(--ink-500);
+  padding: 4px 7px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.visual-evidence-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: white;
+  color: var(--ink-700);
+}
+.visual-evidence-image-frame {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: #eef3f6;
+  min-height: 260px;
+}
+.visual-evidence-image-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.visual-region-highlight {
+  position: absolute;
+  border: 2px solid var(--orange-600);
+  background: rgba(232, 95, 22, .12);
+  box-shadow: 0 0 0 9999px rgba(6, 38, 68, .08);
+  pointer-events: none;
+}
+
 .evidence-card-footer {
   display: flex;
   align-items: center;
@@ -520,6 +656,7 @@ code { color: var(--navy-800); font-size: 9px; }
   .service-tile:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .content-grid, .lower-grid { grid-template-columns: 1fr; }
   .workspace-dual-pane { grid-template-columns: 1fr; }
+  .visual-evidence-viewer { grid-template-columns: 1fr; }
   .review-stats-grid { grid-template-columns: repeat(3, 1fr); }
   .approval-banner { flex-direction: column; align-items: stretch; }
   .approve-primary-button { width: 100%; justify-content: center; }
@@ -545,4 +682,7 @@ code { color: var(--navy-800); font-size: 9px; }
   .primary-button { width: 100%; }
   .panel { padding: 16px; }
   .review-stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .visual-region-strip { align-items: flex-start; flex-direction: column; }
+  .visual-region-buttons { justify-content: flex-start; }
+  .visual-evidence-image-frame { min-height: 180px; }
 }
