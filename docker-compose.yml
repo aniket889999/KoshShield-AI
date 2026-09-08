@@ -27,6 +27,20 @@ services:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
+  tool-runner:
+    build:
+      context: ./tools/runner
+    image: koshshield-tool-runner:0.1.0
+    profiles: ["tools"]
+    network_mode: "none"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    user: "65534:65534"
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+
 volumes:
   postgres_data:
   qdrant_storage:

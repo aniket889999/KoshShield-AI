@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from koshshield.database import Base
@@ -27,6 +27,24 @@ class DocumentState:
 class FindingStatus:
     PENDING = "PENDING"
     ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+
+
+class AgentRunState:
+    REQUESTED = "REQUESTED"
+    POLICY_EVALUATED = "POLICY_EVALUATED"
+    APPROVAL_PENDING = "APPROVAL_PENDING"
+    APPROVED = "APPROVED"
+    EXECUTING = "EXECUTING"
+    VERIFYING = "VERIFYING"
+    COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+
+
+class ApprovalDecision:
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
     REJECTED = "REJECTED"
 
 
@@ -195,3 +213,44 @@ class DocumentChunkRecord(Base):
     char_end: Mapped[int] = mapped_column(Integer)
     masked_content_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class AgentRunRecord(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(120), index=True)
+    actor_id: Mapped[str] = mapped_column(String(120), index=True)
+    tool_name: Mapped[str] = mapped_column(String(80), index=True)
+    classification: Mapped[str] = mapped_column(String(40))
+    arguments_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    arguments_hash: Mapped[str] = mapped_column(String(64))
+    argument_summary: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    state_history: Mapped[list[str]] = mapped_column(JSON, default=list)
+    policy_decision: Mapped[str] = mapped_column(String(20))
+    policy_reason: Mapped[str] = mapped_column(String(255))
+    approval_required: Mapped[bool] = mapped_column(default=True)
+    result_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    result_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class AgentApprovalRecord(Base):
+    __tablename__ = "agent_approvals"
+    __table_args__ = (UniqueConstraint("agent_run_id", name="uq_agent_approval_run"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    decision: Mapped[str] = mapped_column(String(20), default=ApprovalDecision.PENDING)
+    reviewer_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

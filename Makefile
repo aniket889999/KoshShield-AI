@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev-api dev-web infra-up infra-down test lint generate-key
+.PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key
 
 bootstrap:
 	/opt/anaconda3/bin/python3.12 -m venv .venv
@@ -16,6 +16,9 @@ infra-up:
 
 infra-down:
 	docker compose down
+
+tool-runner-build:
+	docker compose --profile tools build tool-runner
 
 test:
 	.venv/bin/pytest apps/api/tests

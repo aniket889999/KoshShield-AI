@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     ocr_rec_model_dir: Path | None = None
     ocr_cls_model_dir: Path | None = None
     pii_salt: str = "koshshield-default-dev-salt"
+    agent_integrity_secret: str = "koshshield-default-dev-agent-integrity"
     max_extraction_pages: int = Field(default=50, ge=1, le=500)
     max_extracted_text_bytes: int = Field(default=5 * 1024 * 1024, ge=1024)
     max_image_dimension: int = Field(default=4096, ge=256)
@@ -38,6 +39,9 @@ class Settings(BaseSettings):
     qdrant_collection: str = "koshshield_masked_docs"
     retrieval_rrf_k: int = Field(default=60, ge=1, le=1000)
     max_search_top_k: int = Field(default=50, ge=1, le=100)
+    tool_runner_image: str = "koshshield-tool-runner:0.1.0"
+    tool_runner_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    tool_runner_max_output_bytes: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
 
     @field_validator("qdrant_url", "llama_base_url")
     @classmethod

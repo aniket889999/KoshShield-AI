@@ -32,8 +32,8 @@ The implementation plan and architecture boundaries are documented in
 
 ## Development status
 
-Milestone 4 now has a working multimodal-retrieval MVP slice on top of the
-Milestone 3 hardened retrieval base. It features:
+Milestone 5 now provides a policy-gated local agent workflow on top of the
+multimodal retrieval base. The current MVP features:
 - Pre-indexing privacy gate ensuring zero unreviewed PII reaches retrieval stores.
 - Deterministic UUIDv5 chunk identities derived from tenant, full document ID, version, and content hash.
 - Fail-closed BGE-M3 embedding provider with dynamic dimension verification against Qdrant schema.
@@ -47,9 +47,15 @@ Milestone 3 hardened retrieval base. It features:
 - Privacy-masked visual captions and table/form or diagram/map region metadata attached to indexed chunks.
 - Tenant-scoped visual evidence endpoint that serves page images only for active retrieved chunks.
 - Evidence viewer in the Intelligence console with cited-region highlighting.
+- LangGraph policy routing with persisted run state and human approvals.
+- Independent-review enforcement that prevents a requester approving their own action.
+- Bounded calculator and indexed-document processing report tools.
+- Network-disabled, read-only, unprivileged Docker execution with CPU, memory, PID, and time limits.
+- Verified and hashed tool output plus fail-closed rejection and audit records.
+- Operational Approvals console for requesting, reviewing, rejecting, executing, and retrying runs.
 
-Qwen3-VL answer generation over authorized top-ranked images remains the next
-generation-layer task.
+Graph-assisted retrieval is the next roadmap milestone. Qwen3-VL answer generation over
+authorized top-ranked images remains a later generation-layer task.
 
 ## Local quick start
 
@@ -67,6 +73,7 @@ start the infrastructure and applications in separate terminals:
 
 ```bash
 make infra-up
+make tool-runner-build
 make dev-api
 make dev-web
 ```

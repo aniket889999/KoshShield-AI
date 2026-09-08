@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DocumentResponse(BaseModel):
@@ -174,3 +174,58 @@ class RetrievalStatusResponse(BaseModel):
     embedding_model_reason: str
     total_chunks: int
     indexed_documents_count: int
+
+
+class AgentActionRequest(BaseModel):
+    tool_name: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
+    classification: Literal["INTERNAL", "CONFIDENTIAL", "RESTRICTED"] = "CONFIDENTIAL"
+    arguments: dict[str, object]
+
+    @field_validator("arguments")
+    @classmethod
+    def limit_arguments(cls, value: dict[str, object]) -> dict[str, object]:
+        import json
+
+        if len(json.dumps(value, sort_keys=True, separators=(",", ":"))) > 4096:
+            raise ValueError("tool arguments exceed the 4096-byte policy limit")
+        return value
+
+
+class AgentApprovalResponse(BaseModel):
+    decision: str
+    reviewer_id: str | None
+    version: int
+    decided_at: datetime | None
+
+
+class AgentRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    tenant_id: str
+    actor_id: str
+    tool_name: str
+    classification: str
+    arguments_hash: str
+    argument_summary: str
+    status: str
+    state_history: list[str]
+    policy_decision: str
+    policy_reason: str
+    approval_required: bool
+    approval: AgentApprovalResponse | None = None
+    result: dict[str, object] | None = None
+    result_hash: str | None = None
+    failure_code: str | None = None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentApprovalDecisionRequest(BaseModel):
+    decision: Literal["APPROVED", "REJECTED"]
+    version: int = Field(ge=1)
+
+
+class AgentExecuteRequest(BaseModel):
+    version: int = Field(ge=1)

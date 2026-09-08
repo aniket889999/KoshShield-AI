@@ -314,3 +314,102 @@ export async function fetchVisualEvidenceImage(chunkId: string) {
   }
   return response.blob();
 }
+
+export type AgentRunStatus =
+  | "APPROVAL_PENDING"
+  | "APPROVED"
+  | "EXECUTING"
+  | "VERIFYING"
+  | "COMPLETED"
+  | "REJECTED"
+  | "FAILED";
+
+export interface AgentApproval {
+  decision: "PENDING" | "APPROVED" | "REJECTED";
+  reviewer_id?: string | null;
+  version: number;
+  decided_at?: string | null;
+}
+
+export interface AgentRun {
+  id: string;
+  tenant_id: string;
+  actor_id: string;
+  tool_name: string;
+  classification: "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+  arguments_hash: string;
+  argument_summary: string;
+  status: AgentRunStatus;
+  state_history: string[];
+  policy_decision: "ALLOWED" | "REJECTED";
+  policy_reason: string;
+  approval_required: boolean;
+  approval?: AgentApproval | null;
+  result?: {
+    tool: string;
+    output: { value?: string; content?: string; media_type?: string };
+    sandbox: {
+      network_disabled: boolean;
+      read_only_root: boolean;
+      capabilities_dropped: boolean;
+      image: string;
+      timeout_seconds: number;
+    };
+    sandbox_output_hash: string;
+  } | null;
+  result_hash?: string | null;
+  failure_code?: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listAgentRuns() {
+  return request<AgentRun[]>("/agent/runs", {
+    headers: { "X-Tenant-ID": "default" },
+  });
+}
+
+export function proposeAgentAction(params: {
+  tool_name: string;
+  classification: "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+  arguments: Record<string, unknown>;
+}) {
+  return request<AgentRun>("/agent/runs", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Actor-ID": "local-demo-user",
+      "X-Tenant-ID": "default",
+    },
+    body: JSON.stringify(params),
+  });
+}
+
+export function decideAgentApproval(
+  runId: string,
+  decision: "APPROVED" | "REJECTED",
+  version: number
+) {
+  return request<AgentRun>(`/agent/runs/${runId}/approval`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Actor-ID": "local-demo-approver",
+      "X-Tenant-ID": "default",
+    },
+    body: JSON.stringify({ decision, version }),
+  });
+}
+
+export function executeAgentAction(runId: string, version: number) {
+  return request<AgentRun>(`/agent/runs/${runId}/execute`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Actor-ID": "local-demo-executor",
+      "X-Tenant-ID": "default",
+    },
+    body: JSON.stringify({ version }),
+  });
+}

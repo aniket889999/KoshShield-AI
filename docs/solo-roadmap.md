@@ -49,12 +49,18 @@
 - Intelligence console can open authorized page evidence and highlight the cited region.
 - Qwen3-VL answer generation remains future work; the implemented boundary ensures it receives only authorized visual evidence when added.
 
-## Milestone 5: policy-gated agent
+## Milestone 5: policy-gated agent (completed)
 
-- Explicit LangGraph states and persisted approvals.
-- Safe calculator and report-generator tools.
-- Network-disabled Docker execution and output verification.
-- Prohibited actions are rejected and audited.
+- Explicit LangGraph policy states are persisted with every run.
+- Independent human approvals use optimistic version checks and prevent self-approval.
+- Safe bounded calculator and indexed-document report-generator tools.
+- Docker execution disables networking, uses a read-only root filesystem, drops all Linux
+  capabilities, applies CPU/memory/PID/time limits, and runs as an unprivileged user.
+- Tool arguments use a keyed integrity hash; outputs are schema-validated, size-bounded, and
+  cryptographically hashed before storage.
+- Shell, filesystem, SQL, browser, network, Python, unknown, and malformed actions are rejected;
+  prohibited arguments are withheld from storage while their hash is audited.
+- Tenant-scoped agent APIs and an operational approval queue are available in the web console.
 
 ## Milestone 6: graph-assisted retrieval
 

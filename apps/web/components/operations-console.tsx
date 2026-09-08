@@ -83,6 +83,7 @@ import {
   formatTime,
   shortHash,
 } from "@/lib/format";
+import { AgentApprovalsWorkspace } from "@/components/agent-approvals-workspace";
 
 type NavTab = "Overview" | "Documents" | "Review queue" | "Intelligence" | "Approvals" | "Audit trail";
 
@@ -1659,8 +1660,10 @@ export function OperationsConsole() {
             </div>
           )}
 
-          {/* Fallback for other tabs */}
-          {(activeNav === "Approvals" || activeNav === "Audit trail") && (
+          {activeNav === "Approvals" && <AgentApprovalsWorkspace />}
+
+          {/* Fallback for future audit expansion */}
+          {activeNav === "Audit trail" && (
             <section className="panel placeholder-panel">
               <div className="panel-heading">
                 <div>
@@ -1669,10 +1672,7 @@ export function OperationsConsole() {
                 </div>
               </div>
               <p className="placeholder-text">
-                {activeNav === "Approvals" &&
-                  "Policy-gated agent tools and Docker sandbox approvals are scheduled for Milestone 5."}
-                {activeNav === "Audit trail" &&
-                  "Full audit chain inspection dashboard is scheduled for Milestone 7; recent audit events are available on Overview."}
+                Full audit chain inspection dashboard is scheduled for Milestone 7; recent audit events are available on Overview.
               </p>
               <button className="primary-button" onClick={() => setActiveNav("Overview")}>
                 Return to Overview
