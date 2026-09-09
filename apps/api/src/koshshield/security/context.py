@@ -13,7 +13,7 @@ class RequestContext:
     roles: tuple[str, ...] = field(default_factory=lambda: ("user",))
 
     def has_role(self, role: str) -> bool:
-        return role in self.roles
+        return role.lower() in self.roles
 
 
 def get_request_context(
@@ -46,9 +46,9 @@ def get_request_context(
         actor_id = "local-demo-user"
 
     if x_roles:
-        roles = tuple(r.strip() for r in x_roles.split(",") if r.strip())
+        roles = tuple(r.strip().lower() for r in x_roles.split(",") if r.strip())
     else:
-        roles = ("user", "reviewer", "admin")
+        roles = ("user",)
 
     return RequestContext(
         actor_id=actor_id,
@@ -58,3 +58,25 @@ def get_request_context(
 
 
 RequestContextDependency = Annotated[RequestContext, Depends(get_request_context)]
+
+
+def require_roles(*allowed_roles: str):
+    """Enforces that the request context has at least one of the allowed roles (or admin)."""
+    normalized_allowed = {r.strip().lower() for r in allowed_roles}
+
+    def role_checker(context: RequestContextDependency) -> RequestContext:
+        if context.has_role("admin") or any(context.has_role(r) for r in normalized_allowed):
+            return context
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: requires one of the following roles: {sorted(normalized_allowed)}",
+        )
+
+    return role_checker
+
+
+ReviewerContextDependency = Annotated[RequestContext, Depends(require_roles("reviewer"))]
+ApproverContextDependency = Annotated[RequestContext, Depends(require_roles("approver"))]
+ExecutorContextDependency = Annotated[RequestContext, Depends(require_roles("executor"))]
+AuditorContextDependency = Annotated[RequestContext, Depends(require_roles("auditor"))]
+AdminContextDependency = Annotated[RequestContext, Depends(require_roles("admin"))]

@@ -120,6 +120,6 @@ class VectorStore(Protocol):
         """Search using sparse lexical vector with mandatory tenant isolation."""
         ...
 
-    def count_points(self, tenant_id: str | None = None) -> int:
-        """Count total indexed points, optionally filtered by tenant."""
+    def count_points(self, tenant_id: str) -> int:
+        """Count total indexed points, strictly scoped to tenant."""
         ...

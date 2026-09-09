@@ -136,7 +136,7 @@ class InMemoryVectorStore(VectorStore):
             for score, c in scored[:limit]
         ]
 
-    def count_points(self, tenant_id: str | None = None) -> int:
-        if tenant_id:
-            return len([c for c in self.chunks if c.tenant_id == tenant_id])
-        return len(self.chunks)
+    def count_points(self, tenant_id: str) -> int:
+        if not tenant_id:
+            raise ValueError("tenant_id is required to count points")
+        return len([c for c in self.chunks if c.tenant_id == tenant_id])

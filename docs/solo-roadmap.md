@@ -39,6 +39,20 @@
 - Accurate benchmark separation: deterministic synthetic pipeline evaluation vs real-model integration (labeled NOT EXECUTED if weights/containers absent).
 - Interactive Intelligence console in Next.js with vector store telemetry, corpus indexing, and search.
 
+## Hardening Checkpoints: Tenant Isolation & Migration Correctness (Completed)
+
+- **Checkpoint 1 & 1.1**:
+  - Authoritative non-null tenant ownership on documents and audit records (no database or ORM default fallbacks).
+  - Mandatory `tenant_id` on document ingestion, audit events, and vector store telemetry.
+  - Safe Alembic database migration management via `make migrate` supporting pre-Alembic database bootstrap and schema validation.
+  - Startup schema validation in application lifespan that fails closed if the database is uninitialized or behind head.
+  - Dual-version tamper-evident audit hash algorithm (`v1` for legacy records, `v2` for tenant-aware records) preserving legacy audit chains without recomputing historical hashes.
+  - Centralized `RequestContext` dependency that permits header-derived identity strictly in demo mode and fails closed (HTTP 401) in production when verified authentication is absent.
+  - Demo role-based access control (RBAC) enforcing reviewer, approver, executor, auditor, and admin roles, with `X-Roles` permitted in CORS.
+  - Strict 404 response on cross-tenant document, extraction, review, indexing, retrieval, visual evidence, audit, and agent operations to prevent resource enumeration.
+  - Tenant-scoped retrieval telemetry (`GET /retrieval/status`).
+  - Offline integration test isolation: tests requiring live Docker Qdrant or real BGE-M3 model weights skip cleanly when those optional local services are absent.
+
 ## Milestone 4: multimodal retrieval (prototype - security hardening in progress)
 
 - Encrypted page images are captured during local extraction for PDFs and image uploads.

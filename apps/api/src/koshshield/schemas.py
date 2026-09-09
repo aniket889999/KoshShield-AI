@@ -102,6 +102,7 @@ class AuditEventResponse(BaseModel):
     details: dict[str, object]
     previous_hash: str | None
     event_hash: str
+    hash_version: str = "v2"
     created_at: datetime
 
 

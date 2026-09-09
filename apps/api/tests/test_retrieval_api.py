@@ -46,9 +46,11 @@ def test_document_indexing_lifecycle_endpoint(
     client: TestClient,
     mock_dependencies: tuple[DeterministicEmbeddingProvider, InMemoryVectorStore],
 ) -> None:
+    client.headers["X-Roles"] = "admin"
     with Session(bind=engine) as session:
         doc = DocumentRecord(
             id=str(uuid.uuid4()),
+            tenant_id="default",
             filename="tender_approved.pdf",
             media_type="application/pdf",
             size_bytes=4096,
@@ -142,6 +144,7 @@ def test_visual_evidence_page_image_requires_tenant_scoped_chunk(
     with Session(bind=engine) as session:
         doc = DocumentRecord(
             id=doc_id,
+            tenant_id="default",
             filename="visual-evidence.pdf",
             media_type="application/pdf",
             size_bytes=1024,

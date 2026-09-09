@@ -5,11 +5,11 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 
 from koshshield.api.router import api_router
 from koshshield.config import get_settings
-from koshshield.database import Base, engine
+from koshshield.database import engine
+from koshshield.database.migration import check_schema_at_head
 
 settings = get_settings()
 
@@ -20,51 +20,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         database_path = settings.database_url.removeprefix("sqlite:///")
         if database_path and database_path != ":memory:":
             Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-    if settings.auto_create_schema:
-        Base.metadata.create_all(bind=engine)
-        if settings.database_url.startswith("sqlite"):
-            with engine.connect() as conn:
-                for col, col_def in [
-                    ("tenant_id", "VARCHAR(120) DEFAULT 'default'"),
-                    ("version", "INTEGER DEFAULT 1"),
-                    ("updated_at", "DATETIME"),
-                    ("active_index_version", "INTEGER"),
-                    ("index_cleanup_pending", "BOOLEAN DEFAULT 0"),
-                ]:
-                    try:
-                        conn.execute(text(f"ALTER TABLE documents ADD COLUMN {col} {col_def}"))
-                        conn.commit()
-                    except Exception:
-                        pass
-                try:
-                    conn.execute(
-                        text(
-                            "ALTER TABLE audit_events "
-                            "ADD COLUMN tenant_id VARCHAR(120) DEFAULT 'default'"
-                        )
-                    )
-                    conn.commit()
-                except Exception:
-                    pass
-                for col, col_def in [
-                    ("page_image_sha256", "VARCHAR(64)"),
-                    ("page_image_media_type", "VARCHAR(80)"),
-                    ("encrypted_page_image_path", "TEXT"),
-                ]:
-                    try:
-                        conn.execute(text(f"ALTER TABLE document_pages ADD COLUMN {col} {col_def}"))
-                        conn.commit()
-                    except Exception:
-                        pass
-                try:
-                    conn.execute(
-                        text(
-                            "ALTER TABLE document_chunks ADD COLUMN index_version INTEGER DEFAULT 1"
-                        )
-                    )
-                    conn.commit()
-                except Exception:
-                    pass
+
+    check_schema_at_head(engine)
     yield
 
 
@@ -78,7 +35,7 @@ app.add_middleware(
     allow_origins=settings.cors_origin_list,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Actor-ID", "X-Request-ID", "X-Tenant-ID"],
+    allow_headers=["Content-Type", "X-Actor-ID", "X-Request-ID", "X-Tenant-ID", "X-Roles"],
 )
 
 

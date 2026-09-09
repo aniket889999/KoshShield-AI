@@ -87,9 +87,7 @@ class DocumentRecord(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(120), nullable=False, index=True, default="default"
-    )
+    tenant_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     filename: Mapped[str] = mapped_column(String(255))
     media_type: Mapped[str] = mapped_column(String(80))
     size_bytes: Mapped[int] = mapped_column(Integer)
@@ -189,9 +187,7 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(120), nullable=False, index=True, default="default"
-    )
+    tenant_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     actor_id: Mapped[str] = mapped_column(String(120))
     event_type: Mapped[str] = mapped_column(String(120), index=True)
     resource_type: Mapped[str] = mapped_column(String(80))
@@ -201,6 +197,7 @@ class AuditEvent(Base):
     details: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     previous_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hash_version: Mapped[str] = mapped_column(String(20), nullable=False, default="v2")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

@@ -404,14 +404,12 @@ class QdrantVectorStore(VectorStore):
         except Exception as err:
             raise VectorStoreError(f"Sparse search failed on Qdrant: {err}") from err
 
-    def count_points(self, tenant_id: str | None = None) -> int:
-        count_filter = None
-        if tenant_id:
-            count_filter = models.Filter(
-                must=[
-                    models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant_id))
-                ]
-            )
+    def count_points(self, tenant_id: str) -> int:
+        if not tenant_id:
+            raise ValueError("tenant_id is required to count points")
+        count_filter = models.Filter(
+            must=[models.FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant_id))]
+        )
         try:
             res = self._client.count(
                 collection_name=self.collection_name,

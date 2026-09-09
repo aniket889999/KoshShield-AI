@@ -16,7 +16,10 @@ from koshshield.schemas import (
     RetrievalStatusResponse,
     RetrievalVisualRegion,
 )
-from koshshield.security.context import RequestContextDependency
+from koshshield.security.context import (
+    ExecutorContextDependency,
+    RequestContextDependency,
+)
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.retrieval.chunking import DeterministicMaskedChunker
 from koshshield.services.retrieval.embeddings.bge_m3 import BgeM3EmbeddingProvider
@@ -99,7 +102,7 @@ def index_document(
     session: SessionDependency,
     indexing_service: Annotated[DocumentIndexingService, Depends(get_indexing_service)],
     settings: SettingsDependency,
-    context: RequestContextDependency,
+    context: ExecutorContextDependency,
 ) -> IndexingStatusResponse:
     try:
         result = indexing_service.index_document(
@@ -193,6 +196,7 @@ def retrieval_status(
     embedding_provider: Annotated[EmbeddingProvider, Depends(get_embedding_provider)],
     vector_store: Annotated[VectorStore, Depends(get_vector_store)],
     settings: SettingsDependency,
+    context: RequestContextDependency,
 ) -> RetrievalStatusResponse:
     vs_ready, vs_reason = vector_store.is_available()
     emb_ready, emb_reason = embedding_provider.is_available()
@@ -200,14 +204,15 @@ def retrieval_status(
     total_chunks = 0
     if vs_ready:
         try:
-            total_chunks = vector_store.count_points()
+            total_chunks = vector_store.count_points(tenant_id=context.tenant_id)
         except Exception:
             total_chunks = 0
 
     indexed_docs = (
         session.scalar(
             select(func.count(DocumentRecord.id)).where(
-                DocumentRecord.status == DocumentState.INDEXED
+                DocumentRecord.status == DocumentState.INDEXED,
+                DocumentRecord.tenant_id == context.tenant_id,
             )
         )
         or 0

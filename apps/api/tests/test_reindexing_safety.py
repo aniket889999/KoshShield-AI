@@ -20,6 +20,7 @@ from koshshield.services.retrieval.vector_store.interfaces import VectorStoreErr
 def create_indexed_document(session: Session, doc_id: str) -> DocumentRecord:
     doc = DocumentRecord(
         id=doc_id,
+        tenant_id="default",
         filename="safety_test.pdf",
         media_type="application/pdf",
         size_bytes=2048,

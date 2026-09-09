@@ -31,6 +31,7 @@ def create_synthetic_pdf_with_pii() -> bytes:
 
 
 def test_document_lifecycle_state_transitions(client: TestClient) -> None:
+    client.headers["X-Roles"] = "reviewer,approver,admin"
     pdf_bytes = create_synthetic_pdf_with_pii()
 
     # 1. Upload document -> ENCRYPTED

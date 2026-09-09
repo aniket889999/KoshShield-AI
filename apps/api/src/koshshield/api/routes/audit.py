@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from koshshield.database import get_db
 from koshshield.models import AuditEvent
 from koshshield.schemas import AuditEventResponse, AuditIntegrityResponse
-from koshshield.security.context import RequestContextDependency
+from koshshield.security.context import AuditorContextDependency
 from koshshield.services.audit import verify_audit_chain
 
 router = APIRouter()
@@ -17,7 +17,7 @@ SessionDependency = Annotated[Session, Depends(get_db)]
 @router.get("/events", response_model=list[AuditEventResponse])
 def list_audit_events(
     session: SessionDependency,
-    context: RequestContextDependency,
+    context: AuditorContextDependency,
     limit: int = 50,
 ) -> list[AuditEvent]:
     safe_limit = max(1, min(limit, 200))
@@ -34,7 +34,7 @@ def list_audit_events(
 @router.get("/integrity", response_model=AuditIntegrityResponse)
 def audit_integrity(
     session: SessionDependency,
-    context: RequestContextDependency,
+    context: AuditorContextDependency,
 ) -> AuditIntegrityResponse:
     valid, events, invalid_event_id = verify_audit_chain(session, tenant_id=context.tenant_id)
     return AuditIntegrityResponse(

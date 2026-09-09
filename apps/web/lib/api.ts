@@ -103,6 +103,7 @@ export interface AuditEvent {
   resource_type: string;
   resource_id?: string | null;
   event_hash: string;
+  hash_version?: string;
   created_at: string;
 }
 
@@ -117,8 +118,13 @@ export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("X-Roles")) {
+    headers.set("X-Roles", "admin,reviewer,approver,executor,auditor");
+  }
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    headers,
     cache: "no-store",
   });
   if (!response.ok) {

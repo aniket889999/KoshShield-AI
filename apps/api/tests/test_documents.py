@@ -26,13 +26,13 @@ def test_accepts_and_encrypts_pdf(client: TestClient) -> None:
     assert len(vault_objects) == 1
     assert content not in vault_objects[0].read_bytes()
 
-    events = client.get("/api/v1/audit/events").json()
+    events = client.get("/api/v1/audit/events", headers={"X-Roles": "auditor"}).json()
     assert len(events) == 1
     assert events[0]["event_type"] == "document.accepted"
     assert events[0]["actor_id"] == "procurement-officer"
     assert "filename" not in events[0]["details"]
 
-    integrity = client.get("/api/v1/audit/integrity").json()
+    integrity = client.get("/api/v1/audit/integrity", headers={"X-Roles": "auditor"}).json()
     assert integrity["valid"] is True
     assert integrity["event_count"] == 1
     assert integrity["head_hash"] == events[0]["event_hash"]
@@ -63,7 +63,7 @@ def test_detects_audit_event_tampering(client: TestClient) -> None:
         event.actor_id = "tampered-user"
         session.commit()
 
-    integrity = client.get("/api/v1/audit/integrity").json()
+    integrity = client.get("/api/v1/audit/integrity", headers={"X-Roles": "auditor"}).json()
     assert integrity["valid"] is False
     assert integrity["event_count"] == 1
     assert integrity["first_invalid_event_id"] is not None

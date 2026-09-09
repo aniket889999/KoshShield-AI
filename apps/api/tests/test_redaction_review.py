@@ -7,6 +7,7 @@ from koshshield.models import DocumentPageRecord, DocumentVisualRegionRecord
 
 
 def test_redaction_review_workflow_and_approval(client: TestClient) -> None:
+    client.headers["X-Roles"] = "reviewer,approver,auditor"
     pdf_bytes = create_synthetic_pdf_with_pii()
 
     # Upload & extract

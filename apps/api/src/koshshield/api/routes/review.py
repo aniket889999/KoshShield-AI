@@ -24,7 +24,11 @@ from koshshield.schemas import (
     RedactionFindingResponse,
     ReviewQueueItemResponse,
 )
-from koshshield.security.context import RequestContextDependency
+from koshshield.security.context import (
+    ApproverContextDependency,
+    RequestContextDependency,
+    ReviewerContextDependency,
+)
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.extraction.interfaces import ExtractionError, OcrUnavailableError
 from koshshield.services.redaction import (
@@ -120,7 +124,7 @@ def get_extraction_status(
 @router.get("/review", response_model=list[ReviewQueueItemResponse])
 def get_review_queue(
     session: SessionDependency,
-    context: RequestContextDependency,
+    context: ReviewerContextDependency,
 ) -> list[ReviewQueueItemResponse]:
     """Lists documents that require redaction review or have findings scoped to tenant."""
     documents = list(
@@ -211,7 +215,7 @@ def get_review_queue(
 def get_document_redactions(
     document_id: str,
     session: SessionDependency,
-    context: RequestContextDependency,
+    context: ReviewerContextDependency,
 ) -> DocumentRedactionsResponse:
     document = session.scalar(
         select(DocumentRecord).where(
@@ -281,7 +285,7 @@ def update_redaction(
     finding_id: str,
     request: RedactionDecisionRequest,
     session: SessionDependency,
-    context: RequestContextDependency,
+    context: ReviewerContextDependency,
 ) -> RedactionFinding:
     try:
         return update_finding_decision(
@@ -295,10 +299,10 @@ def update_redaction(
         )
     except ConcurrencyConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except RedactionError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post(
@@ -309,7 +313,7 @@ def accept_high_confidence(
     document_id: str,
     session: SessionDependency,
     settings: SettingsDependency,
-    context: RequestContextDependency,
+    context: ReviewerContextDependency,
 ) -> dict[str, int]:
     try:
         count = accept_all_high_confidence(
@@ -332,7 +336,7 @@ def approve_document_redactions(
     document_id: str,
     session: SessionDependency,
     settings: SettingsDependency,
-    context: RequestContextDependency,
+    context: ApproverContextDependency,
 ) -> DocumentRecord:
     try:
         vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)

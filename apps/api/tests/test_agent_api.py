@@ -35,9 +35,11 @@ class FakeRestrictedRunner:
 @pytest.fixture
 def agent_client(client: TestClient) -> TestClient:
     app.dependency_overrides[get_tool_runner] = lambda: FakeRestrictedRunner()
+    client.headers["X-Roles"] = "executor,approver,auditor"
     try:
         yield client
     finally:
+        client.headers.pop("X-Roles", None)
         app.dependency_overrides.pop(get_tool_runner, None)
 
 
@@ -160,6 +162,7 @@ def test_document_report_requires_a_securely_indexed_document(agent_client: Test
         session.add(
             DocumentRecord(
                 id=document_id,
+                tenant_id="default",
                 filename="pending-report.pdf",
                 media_type="application/pdf",
                 size_bytes=128,

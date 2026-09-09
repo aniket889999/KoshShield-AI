@@ -16,6 +16,7 @@ from koshshield.models import (
 
 
 def test_raw_pii_never_stored_in_plaintext(client: TestClient) -> None:
+    client.headers["X-Roles"] = "reviewer,approver,admin"
     pdf_bytes = create_synthetic_pdf_with_pii()
 
     # The known synthetic sensitive identifiers in the test document

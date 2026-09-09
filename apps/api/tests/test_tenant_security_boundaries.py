@@ -40,9 +40,11 @@ def isolated_env(client: TestClient):
     app.dependency_overrides[get_embedding_provider] = lambda: fake_emb
     app.dependency_overrides[get_vector_store] = lambda: fake_store
     app.dependency_overrides[get_tool_runner] = lambda: fake_runner
+    client.headers["X-Roles"] = "user,reviewer,approver,executor,auditor,admin"
     try:
         yield client, fake_store
     finally:
+        client.headers.pop("X-Roles", None)
         app.dependency_overrides.pop(get_embedding_provider, None)
         app.dependency_overrides.pop(get_vector_store, None)
         app.dependency_overrides.pop(get_tool_runner, None)
@@ -432,3 +434,155 @@ def test_fail_closed_in_production_when_unverified(isolated_env) -> None:
     finally:
         settings.demo_mode = original_demo_mode
         settings.environment = original_env
+
+
+def test_cross_tenant_retrieval_telemetry_isolation(isolated_env) -> None:
+    client, fake_store = isolated_env
+
+    # Tenant A uploads, extracts, approves, and indexes a document
+    res_a = client.post(
+        "/api/v1/documents",
+        files={
+            "file": (
+                "telemetry_doc.pdf",
+                create_synthetic_pdf("Telemetry isolation confidential content"),
+                "application/pdf",
+            )
+        },
+        headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "officer-a"},
+    )
+    doc_a_id = res_a.json()["id"]
+
+    client.post(
+        f"/api/v1/documents/{doc_a_id}/extraction",
+        headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "officer-a"},
+    )
+    client.post(
+        f"/api/v1/documents/{doc_a_id}/redactions/accept-high-confidence",
+        headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "officer-a"},
+    )
+    client.post(
+        f"/api/v1/documents/{doc_a_id}/redactions/approve",
+        headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "officer-a"},
+    )
+    client.post(
+        f"/api/v1/documents/{doc_a_id}/index",
+        headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "officer-a"},
+    )
+
+    # Tenant A status: 1 document and indexed vector points
+    status_a = client.get("/api/v1/retrieval/status", headers={"X-Tenant-ID": "tenant-a"}).json()
+    assert status_a["indexed_documents_count"] == 1
+    assert status_a["total_chunks"] >= 1
+
+    # Tenant B status: 0 documents and 0 vector points
+    status_b = client.get("/api/v1/retrieval/status", headers={"X-Tenant-ID": "tenant-b"}).json()
+    assert status_b["indexed_documents_count"] == 0
+    assert status_b["total_chunks"] == 0
+
+    # Default tenant status: 0 documents and 0 vector points
+    status_default = client.get("/api/v1/retrieval/status").json()
+    assert status_default["indexed_documents_count"] == 0
+    assert status_default["total_chunks"] == 0
+
+
+def test_rbac_unauthorized_returns_403_and_authorized_succeeds(isolated_env) -> None:
+    client, _ = isolated_env
+
+    # 1. Create a document for testing
+    res = client.post(
+        "/api/v1/documents",
+        files={"file": ("rbac_doc.pdf", create_synthetic_pdf("RBAC test"), "application/pdf")},
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Actor-ID": "user-1", "X-Roles": "user"},
+    )
+    assert res.status_code == 201
+    doc_id = res.json()["id"]
+
+    client.post(
+        f"/api/v1/documents/{doc_id}/extraction",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Actor-ID": "user-1", "X-Roles": "user"},
+    )
+
+    # 2. Reviewer endpoint: GET /documents/{id}/redactions
+    res_unauth = client.get(
+        f"/api/v1/documents/{doc_id}/redactions",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "user"},
+    )
+    assert res_unauth.status_code == 403
+    assert "requires one of the following roles" in res_unauth.json()["detail"]
+
+    res_auth = client.get(
+        f"/api/v1/documents/{doc_id}/redactions",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "reviewer"},
+    )
+    assert res_auth.status_code == 200
+
+    # 3. Approver endpoint: POST /documents/{id}/redactions/approve
+    res_approve_unauth = client.post(
+        f"/api/v1/documents/{doc_id}/redactions/approve",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "user"},
+    )
+    assert res_approve_unauth.status_code == 403
+
+    # 4. Admin endpoint: POST /documents/{id}/index
+    res_index_unauth = client.post(
+        f"/api/v1/documents/{doc_id}/index",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "reviewer"},
+    )
+    assert res_index_unauth.status_code == 403
+
+    # 5. Auditor endpoint: GET /audit/events and GET /audit/integrity
+    audit_unauth = client.get(
+        "/api/v1/audit/events",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "user"},
+    )
+    assert audit_unauth.status_code == 403
+
+    audit_auth = client.get(
+        "/api/v1/audit/events",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "auditor"},
+    )
+    assert audit_auth.status_code == 200
+
+    integ_unauth = client.get(
+        "/api/v1/audit/integrity",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "user"},
+    )
+    assert integ_unauth.status_code == 403
+
+    integ_auth = client.get(
+        "/api/v1/audit/integrity",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Roles": "auditor"},
+    )
+    assert integ_auth.status_code == 200
+
+    # 6. Executor endpoint: POST /agent/runs
+    agent_unauth = client.post(
+        "/api/v1/agent/runs",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Actor-ID": "u1", "X-Roles": "user"},
+        json={"tool_name": "calculator", "arguments": {"expression": "1 + 1"}},
+    )
+    assert agent_unauth.status_code == 403
+
+    agent_auth = client.post(
+        "/api/v1/agent/runs",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Actor-ID": "u1", "X-Roles": "executor"},
+        json={"tool_name": "calculator", "arguments": {"expression": "1 + 1"}},
+    )
+    assert agent_auth.status_code == 201
+    run_id = agent_auth.json()["id"]
+
+    # 7. Approver endpoint: POST /agent/runs/{id}/approval
+    agent_appr_unauth = client.post(
+        f"/api/v1/agent/runs/{run_id}/approval",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Actor-ID": "u2", "X-Roles": "executor"},
+        json={"decision": "APPROVED", "version": 1},
+    )
+    assert agent_appr_unauth.status_code == 403
+
+    agent_appr_auth = client.post(
+        f"/api/v1/agent/runs/{run_id}/approval",
+        headers={"X-Tenant-ID": "tenant-rbac", "X-Actor-ID": "u2", "X-Roles": "approver"},
+        json={"decision": "APPROVED", "version": 1},
+    )
+    assert agent_appr_auth.status_code == 200

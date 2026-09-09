@@ -35,6 +35,7 @@ def test_privacy_gate_rejects_unapproved_document(db_session: Session) -> None:
     gate = RetrievalPrivacyGate()
     doc = DocumentRecord(
         id=str(uuid.uuid4()),
+        tenant_id="default",
         filename="draft.pdf",
         media_type="application/pdf",
         size_bytes=1024,
@@ -63,6 +64,7 @@ def test_privacy_gate_rejects_unresolved_findings(db_session: Session) -> None:
     gate = RetrievalPrivacyGate()
     doc = DocumentRecord(
         id=str(uuid.uuid4()),
+        tenant_id="default",
         filename="approved_with_pending.pdf",
         media_type="application/pdf",
         size_bytes=1024,
@@ -94,6 +96,7 @@ def test_privacy_gate_detects_residual_raw_pii(db_session: Session) -> None:
     gate = RetrievalPrivacyGate()
     doc = DocumentRecord(
         id=str(uuid.uuid4()),
+        tenant_id="default",
         filename="leaky.pdf",
         media_type="application/pdf",
         size_bytes=1024,
@@ -135,6 +138,7 @@ def test_privacy_gate_accepts_clean_masked_document(db_session: Session) -> None
     gate = RetrievalPrivacyGate()
     doc = DocumentRecord(
         id=str(uuid.uuid4()),
+        tenant_id="default",
         filename="clean.pdf",
         media_type="application/pdf",
         size_bytes=1024,

@@ -1,9 +1,12 @@
-.PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key
+.PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key migrate
 
 bootstrap:
 	/opt/anaconda3/bin/python3.12 -m venv .venv
 	.venv/bin/pip install -e "apps/api[dev]"
 	pnpm install
+
+migrate:
+	.venv/bin/python -m koshshield.database.migration
 
 dev-api:
 	.venv/bin/uvicorn koshshield.main:app --app-dir apps/api/src --reload --port 8000

@@ -13,7 +13,11 @@ from koshshield.schemas import (
     AgentExecuteRequest,
     AgentRunResponse,
 )
-from koshshield.security.context import RequestContextDependency
+from koshshield.security.context import (
+    ApproverContextDependency,
+    ExecutorContextDependency,
+    RequestContextDependency,
+)
 from koshshield.services.agent.service import (
     AgentRunConflictError,
     AgentRunNotFoundError,
@@ -114,7 +118,7 @@ def propose_agent_action(
     request: AgentActionRequest,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    context: RequestContextDependency,
+    context: ExecutorContextDependency,
 ) -> AgentRunResponse:
     run = service.propose_action(
         session=session,
@@ -133,7 +137,7 @@ def decide_agent_approval(
     request: AgentApprovalDecisionRequest,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    context: RequestContextDependency,
+    context: ApproverContextDependency,
 ) -> AgentRunResponse:
     try:
         run = service.decide_approval(
@@ -159,7 +163,7 @@ def execute_agent_action(
     request: AgentExecuteRequest,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    context: RequestContextDependency,
+    context: ExecutorContextDependency,
 ) -> AgentRunResponse:
     try:
         run = service.execute_action(
