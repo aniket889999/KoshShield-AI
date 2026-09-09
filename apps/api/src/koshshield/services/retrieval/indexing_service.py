@@ -71,9 +71,16 @@ class DocumentIndexingService:
         tenant_id: str = "default",
         classification: str = "CONFIDENTIAL",
     ) -> IndexingResult:
-        doc = session.scalar(select(DocumentRecord).where(DocumentRecord.id == document_id))
+        doc = session.scalar(
+            select(DocumentRecord).where(
+                DocumentRecord.id == document_id,
+                DocumentRecord.tenant_id == tenant_id,
+            )
+        )
         if not doc:
             raise ValueError(f"Document '{document_id}' not found")
+
+        doc_tenant_id = doc.tenant_id
 
         target_version = doc.version
         previous_active_version = doc.active_index_version
@@ -93,12 +100,13 @@ class DocumentIndexingService:
 
         record_audit_event(
             session=session,
+            tenant_id=doc_tenant_id,
             actor_id=actor_id,
             event_type="DOCUMENT_INDEXING_STARTED",
             resource_type="document",
             resource_id=doc.id,
             details={
-                "tenant_id": tenant_id,
+                "tenant_id": doc_tenant_id,
                 "target_version": target_version,
                 "previous_active_version": previous_active_version,
             },
@@ -117,7 +125,7 @@ class DocumentIndexingService:
                     document_filename=doc.filename,
                     document_evidence_hash=doc.sha256,
                     redaction_version=target_version,
-                    tenant_id=tenant_id,
+                    tenant_id=doc_tenant_id,
                     classification=classification,
                 )
                 all_chunks.extend(page_chunks)
@@ -204,7 +212,7 @@ class DocumentIndexingService:
             point_ids = [c.point_id for c in vs_chunks]
             points_verified = self.vector_store.verify_points(
                 point_ids=point_ids,
-                tenant_id=tenant_id,
+                tenant_id=doc_tenant_id,
             )
             if not points_verified:
                 raise VectorStoreError(
@@ -228,7 +236,7 @@ class DocumentIndexingService:
             try:
                 self.vector_store.delete_stale_chunks(
                     document_id=doc.id,
-                    tenant_id=tenant_id,
+                    tenant_id=doc_tenant_id,
                     active_version=target_version,
                 )
             except Exception as stale_err:
@@ -243,12 +251,13 @@ class DocumentIndexingService:
             completed_at = datetime.now(UTC).isoformat()
             record_audit_event(
                 session=session,
+                tenant_id=doc_tenant_id,
                 actor_id=actor_id,
                 event_type="DOCUMENT_INDEXED",
                 resource_type="document",
                 resource_id=doc.id,
                 details={
-                    "tenant_id": tenant_id,
+                    "tenant_id": doc_tenant_id,
                     "chunk_count": len(all_chunks),
                     "active_index_version": target_version,
                     "evidence_hash": doc.sha256[:16],
@@ -262,7 +271,7 @@ class DocumentIndexingService:
                 chunk_count=len(all_chunks),
                 redaction_version=target_version,
                 active_index_version=target_version,
-                tenant_id=tenant_id,
+                tenant_id=doc_tenant_id,
                 completed_at=completed_at,
             )
 
@@ -274,6 +283,7 @@ class DocumentIndexingService:
                 doc_fail.status = DocumentState.INDEX_FAILED
                 record_audit_event(
                     session=session,
+                    tenant_id=tenant_id,
                     actor_id=actor_id,
                     event_type="DOCUMENT_INDEXING_FAILED",
                     resource_type="document",

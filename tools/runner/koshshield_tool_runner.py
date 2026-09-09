@@ -132,9 +132,19 @@ def main() -> int:
             result = document_report(payload)
         else:
             raise RestrictedToolError("tool not allowed")
-        json.dump({"ok": True, "tool": tool, "result": result}, sys.stdout, separators=(",", ":"))
+        json.dump(
+            {"ok": True, "tool": tool, "result": result},
+            sys.stdout,
+            separators=(",", ":"),
+        )
         return 0
-    except (RestrictedToolError, SyntaxError, TypeError, ValueError, json.JSONDecodeError):
+    except (
+        RestrictedToolError,
+        SyntaxError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
         json.dump({"ok": False, "error": "RESTRICTED_TOOL_REJECTED"}, sys.stdout)
         return 2
 

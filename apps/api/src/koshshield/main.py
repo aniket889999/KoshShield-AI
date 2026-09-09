@@ -25,6 +25,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if settings.database_url.startswith("sqlite"):
             with engine.connect() as conn:
                 for col, col_def in [
+                    ("tenant_id", "VARCHAR(120) DEFAULT 'default'"),
                     ("version", "INTEGER DEFAULT 1"),
                     ("updated_at", "DATETIME"),
                     ("active_index_version", "INTEGER"),
@@ -35,6 +36,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                         conn.commit()
                     except Exception:
                         pass
+                try:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE audit_events "
+                            "ADD COLUMN tenant_id VARCHAR(120) DEFAULT 'default'"
+                        )
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
                 for col, col_def in [
                     ("page_image_sha256", "VARCHAR(64)"),
                     ("page_image_media_type", "VARCHAR(80)"),

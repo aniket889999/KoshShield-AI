@@ -39,7 +39,7 @@
 - Accurate benchmark separation: deterministic synthetic pipeline evaluation vs real-model integration (labeled NOT EXECUTED if weights/containers absent).
 - Interactive Intelligence console in Next.js with vector store telemetry, corpus indexing, and search.
 
-## Milestone 4: multimodal retrieval (MVP slice completed)
+## Milestone 4: multimodal retrieval (prototype - security hardening in progress)
 
 - Encrypted page images are captured during local extraction for PDFs and image uploads.
 - Masked visual region records are generated only after human redaction approval.
@@ -49,7 +49,7 @@
 - Intelligence console can open authorized page evidence and highlight the cited region.
 - Qwen3-VL answer generation remains future work; the implemented boundary ensures it receives only authorized visual evidence when added.
 
-## Milestone 5: policy-gated agent (completed)
+## Milestone 5: policy-gated agent (prototype - security hardening in progress)
 
 - Explicit LangGraph policy states are persisted with every run.
 - Independent human approvals use optimistic version checks and prevent self-approval.

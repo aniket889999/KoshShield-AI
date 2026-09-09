@@ -22,6 +22,7 @@ export interface SystemStatus {
 
 export interface DocumentRecord {
   id: string;
+  tenant_id: string;
   filename: string;
   media_type: string;
   size_bytes: number;
@@ -83,6 +84,7 @@ export interface DocumentRedactions {
 
 export interface ReviewQueueItem {
   document_id: string;
+  tenant_id: string;
   filename: string;
   status: string;
   total_pages: number;
@@ -95,6 +97,7 @@ export interface ReviewQueueItem {
 
 export interface AuditEvent {
   id: string;
+  tenant_id: string;
   actor_id: string;
   event_type: string;
   resource_type: string;

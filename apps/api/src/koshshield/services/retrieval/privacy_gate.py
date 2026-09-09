@@ -63,7 +63,14 @@ class RetrievalPrivacyGate:
                 f"Document '{document.id}' in state '{document.status}' cannot be indexed. "
                 "Must be REDACTION_APPROVED or INDEX_READY."
             )
-            self._audit_block(session, document.id, actor_id, "ILLEGAL_STATE", msg)
+            self._audit_block(
+                session,
+                document.id,
+                actor_id,
+                "ILLEGAL_STATE",
+                msg,
+                tenant_id=getattr(document, "tenant_id", "default"),
+            )
             raise DocumentNotApprovedError(msg)
 
         # 2. Unresolved findings check
@@ -75,7 +82,14 @@ class RetrievalPrivacyGate:
         )
         if pending_count is not None:
             msg = f"Document '{document.id}' contains unresolved redaction findings."
-            self._audit_block(session, document.id, actor_id, "UNRESOLVED_FINDINGS", msg)
+            self._audit_block(
+                session,
+                document.id,
+                actor_id,
+                "UNRESOLVED_FINDINGS",
+                msg,
+                tenant_id=getattr(document, "tenant_id", "default"),
+            )
             raise UnresolvedFindingsError(msg)
 
         # 3. Retrieve approved masked pages
@@ -88,7 +102,14 @@ class RetrievalPrivacyGate:
         )
         if not pages:
             msg = f"Document '{document.id}' has no extracted pages to index."
-            self._audit_block(session, document.id, actor_id, "NO_PAGES", msg)
+            self._audit_block(
+                session,
+                document.id,
+                actor_id,
+                "NO_PAGES",
+                msg,
+                tenant_id=getattr(document, "tenant_id", "default"),
+            )
             raise PrivacyGateError(msg)
 
         # 4. Scan masked text on all pages with IndianPiiDetector
@@ -111,6 +132,7 @@ class RetrievalPrivacyGate:
                     "RESIDUAL_PII_DETECTED",
                     f"Residual PII types detected: {types}",
                     extra={"page_number": page.page_number, "types": types},
+                    tenant_id=getattr(document, "tenant_id", "default"),
                 )
                 logger.error(msg)
                 raise ResidualPiiDetectedError(msg)
@@ -125,6 +147,7 @@ class RetrievalPrivacyGate:
         reason: str,
         description: str,
         extra: dict[str, Any] | None = None,
+        tenant_id: str = "default",
     ) -> None:
         details: dict[str, Any] = {
             "reason": reason,
@@ -134,6 +157,7 @@ class RetrievalPrivacyGate:
             details.update(extra)
         record_audit_event(
             session=session,
+            tenant_id=tenant_id,
             actor_id=actor_id,
             event_type="INDEXING_PRIVACY_GATE_BLOCKED",
             resource_type="document",

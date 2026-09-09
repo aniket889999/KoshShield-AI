@@ -8,6 +8,7 @@ class DocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    tenant_id: str
     filename: str
     media_type: str
     size_bytes: int
@@ -59,6 +60,7 @@ class RedactionDecisionRequest(BaseModel):
 
 class ReviewQueueItemResponse(BaseModel):
     document_id: str
+    tenant_id: str
     filename: str
     status: str
     total_pages: int
@@ -92,6 +94,7 @@ class AuditEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
+    tenant_id: str
     actor_id: str
     event_type: str
     resource_type: str

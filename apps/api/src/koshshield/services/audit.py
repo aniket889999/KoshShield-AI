@@ -18,6 +18,7 @@ def canonical_timestamp(value: datetime) -> str:
 def calculate_event_hash(
     *,
     event_id: str,
+    tenant_id: str = "default",
     actor_id: str,
     event_type: str,
     resource_type: str,
@@ -29,6 +30,7 @@ def calculate_event_hash(
     canonical = json.dumps(
         {
             "id": event_id,
+            "tenant_id": tenant_id,
             "actor_id": actor_id,
             "event_type": event_type,
             "resource_type": resource_type,
@@ -46,34 +48,43 @@ def calculate_event_hash(
 def append_audit_event(
     session: Session,
     *,
+    tenant_id: str = "default",
     actor_id: str,
     event_type: str,
     resource_type: str,
     resource_id: str | None,
     details: dict[str, object],
 ) -> AuditEvent:
-    previous = session.scalar(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(1))
+    previous = session.scalar(
+        select(AuditEvent)
+        .where(AuditEvent.tenant_id == tenant_id)
+        .order_by(AuditEvent.created_at.desc())
+        .limit(1)
+    )
     created_at = datetime.now(UTC)
     event_id = str(uuid4())
     previous_hash = previous.event_hash if previous else None
-    event = AuditEvent(
-        id=event_id,
+    event_hash = calculate_event_hash(
+        event_id=event_id,
+        tenant_id=tenant_id,
         actor_id=actor_id,
         event_type=event_type,
         resource_type=resource_type,
         resource_id=resource_id,
         details=details,
         previous_hash=previous_hash,
-        event_hash=calculate_event_hash(
-            event_id=event_id,
-            actor_id=actor_id,
-            event_type=event_type,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            details=details,
-            previous_hash=previous_hash,
-            created_at=created_at,
-        ),
+        created_at=created_at,
+    )
+    event = AuditEvent(
+        id=event_id,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        event_type=event_type,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        details=details,
+        previous_hash=previous_hash,
+        event_hash=event_hash,
         created_at=created_at,
     )
     session.add(event)
@@ -83,13 +94,21 @@ def append_audit_event(
 record_audit_event = append_audit_event
 
 
-def verify_audit_chain(session: Session) -> tuple[bool, list[AuditEvent], str | None]:
-    events = list(session.scalars(select(AuditEvent).order_by(AuditEvent.created_at.asc())))
+def verify_audit_chain(
+    session: Session,
+    tenant_id: str | None = None,
+) -> tuple[bool, list[AuditEvent], str | None]:
+    query = select(AuditEvent).order_by(AuditEvent.created_at.asc())
+    if tenant_id is not None:
+        query = query.where(AuditEvent.tenant_id == tenant_id)
+    events = list(session.scalars(query))
     expected_previous_hash: str | None = None
 
     for event in events:
+        event_tenant = getattr(event, "tenant_id", "default")
         expected_hash = calculate_event_hash(
             event_id=event.id,
+            tenant_id=event_tenant,
             actor_id=event.actor_id,
             event_type=event.event_type,
             resource_type=event.resource_type,

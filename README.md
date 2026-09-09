@@ -32,30 +32,18 @@ The implementation plan and architecture boundaries are documented in
 
 ## Development status
 
-Milestone 5 now provides a policy-gated local agent workflow on top of the
-multimodal retrieval base. The current MVP features:
-- Pre-indexing privacy gate ensuring zero unreviewed PII reaches retrieval stores.
-- Deterministic UUIDv5 chunk identities derived from tenant, full document ID, version, and content hash.
-- Fail-closed BGE-M3 embedding provider with dynamic dimension verification against Qdrant schema.
-- Failure-safe reindexing with authoritative `active_index_version`, point verification, and non-blocking stale point cleanup.
-- Reciprocal Rank Fusion (RRF k=60) with mandatory server-enforced tenant filtering.
-- Verifiable evidence citations with full 64-character SHA-256 evidence digests.
-- Unsalted query privacy auditing (query length and duration only; zero query text or digests stored).
-- Separated benchmarks: deterministic synthetic pipeline evaluation vs real-model integration.
-- Interactive Intelligence console in Next.js with real-time vector telemetry.
-- Encrypted page images captured during local extraction.
-- Privacy-masked visual captions and table/form or diagram/map region metadata attached to indexed chunks.
-- Tenant-scoped visual evidence endpoint that serves page images only for active retrieved chunks.
-- Evidence viewer in the Intelligence console with cited-region highlighting.
-- LangGraph policy routing with persisted run state and human approvals.
-- Independent-review enforcement that prevents a requester approving their own action.
-- Bounded calculator and indexed-document processing report tools.
-- Network-disabled, read-only, unprivileged Docker execution with CPU, memory, PID, and time limits.
-- Verified and hashed tool output plus fail-closed rejection and audit records.
-- Operational Approvals console for requesting, reviewing, rejecting, executing, and retrying runs.
+Milestones 4 and 5 are currently functional prototypes undergoing active security
+boundary hardening. Checkpoint 1 enforces:
+- Authoritative non-null tenant ownership on documents and audit records.
+- Centralized `RequestContext` dependency that permits header-derived identity strictly in demo mode and fails closed (HTTP 401) in production when verified authentication is absent.
+- Strict 404 response on cross-tenant document, extraction, review, indexing, retrieval, visual evidence, audit, and agent operations to prevent resource enumeration.
+- Qdrant tenant payloads derived authoritatively from stored document owners.
+- Tenant-isolated tamper-evident audit trails.
+- Agent `document_report` tool bound strictly to the run tenant.
+- Alembic database migration management supporting safe upgrades on existing and fresh schemas.
 
-Graph-assisted retrieval is the next roadmap milestone. Qwen3-VL answer generation over
-authorized top-ranked images remains a later generation-layer task.
+Graph-assisted retrieval, Qwen3-VL multimodal generation, and gRPC interfaces remain paused
+until all security boundaries and hardening checkpoints are completed and verified.
 
 ## Local quick start
 

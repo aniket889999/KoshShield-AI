@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -24,6 +24,7 @@ from koshshield.schemas import (
     RedactionFindingResponse,
     ReviewQueueItemResponse,
 )
+from koshshield.security.context import RequestContextDependency
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.extraction.interfaces import ExtractionError, OcrUnavailableError
 from koshshield.services.redaction import (
@@ -50,16 +51,17 @@ def trigger_extraction(
     document_id: str,
     session: SessionDependency,
     settings: SettingsDependency,
-    actor_id: Annotated[str, Header(alias="X-Actor-ID", max_length=120)] = "local-demo-user",
+    context: RequestContextDependency,
 ) -> ExtractionJob:
     try:
         vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)
         job = start_document_extraction(
             session=session,
             document_id=document_id,
-            actor_id=actor_id,
+            actor_id=context.actor_id,
             settings=settings,
             vault=vault,
+            tenant_id=context.tenant_id,
         )
         return job
     except VaultConfigurationError as exc:
@@ -87,7 +89,20 @@ def trigger_extraction(
 def get_extraction_status(
     document_id: str,
     session: SessionDependency,
+    context: RequestContextDependency,
 ) -> ExtractionJob:
+    doc = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == context.tenant_id,
+        )
+    )
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No extraction job found for document {document_id}",
+        )
+
     job = session.scalar(
         select(ExtractionJob)
         .where(ExtractionJob.document_id == document_id)
@@ -103,19 +118,23 @@ def get_extraction_status(
 
 
 @router.get("/review", response_model=list[ReviewQueueItemResponse])
-def get_review_queue(session: SessionDependency) -> list[ReviewQueueItemResponse]:
-    """Lists documents that require redaction review or have findings."""
+def get_review_queue(
+    session: SessionDependency,
+    context: RequestContextDependency,
+) -> list[ReviewQueueItemResponse]:
+    """Lists documents that require redaction review or have findings scoped to tenant."""
     documents = list(
         session.scalars(
             select(DocumentRecord)
             .where(
+                DocumentRecord.tenant_id == context.tenant_id,
                 DocumentRecord.status.in_(
                     [
                         DocumentState.REVIEW_REQUIRED,
                         DocumentState.REDACTION_APPROVED,
                         DocumentState.INDEX_READY,
                     ]
-                )
+                ),
             )
             .order_by(DocumentRecord.created_at.desc())
         )
@@ -170,6 +189,7 @@ def get_review_queue(session: SessionDependency) -> list[ReviewQueueItemResponse
         items.append(
             ReviewQueueItemResponse(
                 document_id=doc.id,
+                tenant_id=doc.tenant_id,
                 filename=doc.filename,
                 status=doc.status,
                 total_pages=total_pages,
@@ -191,8 +211,14 @@ def get_review_queue(session: SessionDependency) -> list[ReviewQueueItemResponse
 def get_document_redactions(
     document_id: str,
     session: SessionDependency,
+    context: RequestContextDependency,
 ) -> DocumentRedactionsResponse:
-    document = session.get(DocumentRecord, document_id)
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == context.tenant_id,
+        )
+    )
     if not document:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found"
@@ -255,7 +281,7 @@ def update_redaction(
     finding_id: str,
     request: RedactionDecisionRequest,
     session: SessionDependency,
-    actor_id: Annotated[str, Header(alias="X-Actor-ID", max_length=120)] = "local-demo-user",
+    context: RequestContextDependency,
 ) -> RedactionFinding:
     try:
         return update_finding_decision(
@@ -264,7 +290,8 @@ def update_redaction(
             finding_id=finding_id,
             decision=request.decision,
             expected_version=request.version,
-            actor_id=actor_id,
+            actor_id=context.actor_id,
+            tenant_id=context.tenant_id,
         )
     except ConcurrencyConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -282,20 +309,19 @@ def accept_high_confidence(
     document_id: str,
     session: SessionDependency,
     settings: SettingsDependency,
-    actor_id: Annotated[str, Header(alias="X-Actor-ID", max_length=120)] = "local-demo-user",
+    context: RequestContextDependency,
 ) -> dict[str, int]:
-    document = session.get(DocumentRecord, document_id)
-    if not document:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found"
+    try:
+        count = accept_all_high_confidence(
+            session=session,
+            document_id=document_id,
+            actor_id=context.actor_id,
+            threshold=settings.high_confidence_threshold,
+            tenant_id=context.tenant_id,
         )
-    count = accept_all_high_confidence(
-        session=session,
-        document_id=document_id,
-        actor_id=actor_id,
-        threshold=settings.high_confidence_threshold,
-    )
-    return {"accepted_count": count}
+        return {"accepted_count": count}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.post(
@@ -306,15 +332,16 @@ def approve_document_redactions(
     document_id: str,
     session: SessionDependency,
     settings: SettingsDependency,
-    actor_id: Annotated[str, Header(alias="X-Actor-ID", max_length=120)] = "local-demo-user",
+    context: RequestContextDependency,
 ) -> DocumentRecord:
     try:
         vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)
         return approve_redactions(
             session=session,
             document_id=document_id,
-            actor_id=actor_id,
+            actor_id=context.actor_id,
             vault=vault,
+            tenant_id=context.tenant_id,
         )
     except VaultConfigurationError as exc:
         raise HTTPException(

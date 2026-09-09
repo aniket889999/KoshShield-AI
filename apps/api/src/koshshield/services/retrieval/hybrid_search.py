@@ -185,6 +185,7 @@ class HybridRetrievalService:
         if session is not None:
             record_audit_event(
                 session=session,
+                tenant_id=tenant_id,
                 actor_id=actor_id,
                 event_type="RETRIEVAL_QUERY_EXECUTED",
                 resource_type="retrieval",

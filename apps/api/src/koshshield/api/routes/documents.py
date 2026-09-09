@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -8,6 +8,7 @@ from koshshield.config import Settings, get_settings
 from koshshield.database import get_db
 from koshshield.models import DocumentRecord
 from koshshield.schemas import DocumentResponse
+from koshshield.security.context import RequestContextDependency
 from koshshield.security.file_validation import UnsupportedDocumentError
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.documents import accept_document
@@ -20,12 +21,16 @@ SettingsDependency = Annotated[Settings, Depends(get_settings)]
 @router.get("", response_model=list[DocumentResponse])
 def list_documents(
     session: SessionDependency,
+    context: RequestContextDependency,
     limit: int = 20,
 ) -> list[DocumentRecord]:
     safe_limit = max(1, min(limit, 100))
     return list(
         session.scalars(
-            select(DocumentRecord).order_by(DocumentRecord.created_at.desc()).limit(safe_limit)
+            select(DocumentRecord)
+            .where(DocumentRecord.tenant_id == context.tenant_id)
+            .order_by(DocumentRecord.created_at.desc())
+            .limit(safe_limit)
         )
     )
 
@@ -35,7 +40,7 @@ async def upload_document(
     file: Annotated[UploadFile, File(description="PDF, PNG, or JPEG document")],
     session: SessionDependency,
     settings: SettingsDependency,
-    actor_id: Annotated[str, Header(alias="X-Actor-ID", max_length=120)] = "local-demo-user",
+    context: RequestContextDependency,
 ) -> DocumentRecord:
     content = await file.read(settings.max_upload_bytes + 1)
     if not content:
@@ -49,8 +54,9 @@ async def upload_document(
             session,
             filename=file.filename,
             content=content,
-            actor_id=actor_id,
+            actor_id=context.actor_id,
             vault=vault,
+            tenant_id=context.tenant_id,
         )
     except UnsupportedDocumentError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc

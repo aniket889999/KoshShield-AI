@@ -17,6 +17,7 @@ def accept_document(
     content: bytes,
     actor_id: str,
     vault: EncryptedVault,
+    tenant_id: str = "default",
 ) -> DocumentRecord:
     validated = validate_document(filename, content)
     evidence_hash = hashlib.sha256(content).hexdigest()
@@ -27,6 +28,7 @@ def accept_document(
         vault_path = vault.encrypt(document_id, evidence_hash, content)
         document = DocumentRecord(
             id=document_id,
+            tenant_id=tenant_id,
             filename=validated.filename,
             media_type=validated.media_type,
             size_bytes=len(content),
@@ -37,6 +39,7 @@ def accept_document(
         session.add(document)
         append_audit_event(
             session,
+            tenant_id=tenant_id,
             actor_id=actor_id,
             event_type="document.accepted",
             resource_type="document",

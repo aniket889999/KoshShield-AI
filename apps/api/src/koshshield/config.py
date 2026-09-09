@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     app_name: str = "KoshShield AI"
     environment: str = "development"
+    demo_mode: bool = Field(default=True)
     api_prefix: str = "/api/v1"
     database_url: str = "sqlite:///./data/koshshield.db"
     qdrant_url: str = "http://localhost:6333"

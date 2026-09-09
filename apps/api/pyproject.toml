@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Local-first API for KoshShield AI"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+  "alembic>=1.14,<2",
   "cryptography>=44,<47",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",

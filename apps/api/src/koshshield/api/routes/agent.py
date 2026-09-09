@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from koshshield.config import Settings, get_settings
@@ -13,6 +13,7 @@ from koshshield.schemas import (
     AgentExecuteRequest,
     AgentRunResponse,
 )
+from koshshield.security.context import RequestContextDependency
 from koshshield.services.agent.service import (
     AgentRunConflictError,
     AgentRunNotFoundError,
@@ -87,10 +88,10 @@ def to_run_response(
 def list_agent_runs(
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    x_tenant_id: Annotated[str, Header(min_length=1, max_length=120)] = "default",
+    context: RequestContextDependency,
     limit: int = 50,
 ) -> list[AgentRunResponse]:
-    runs = service.list_runs(session=session, tenant_id=x_tenant_id, limit=limit)
+    runs = service.list_runs(session=session, tenant_id=context.tenant_id, limit=limit)
     return [to_run_response(session=session, service=service, run=run) for run in runs]
 
 
@@ -99,10 +100,10 @@ def get_agent_run(
     run_id: str,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    x_tenant_id: Annotated[str, Header(min_length=1, max_length=120)] = "default",
+    context: RequestContextDependency,
 ) -> AgentRunResponse:
     try:
-        run = service.get_run(session=session, run_id=run_id, tenant_id=x_tenant_id)
+        run = service.get_run(session=session, run_id=run_id, tenant_id=context.tenant_id)
     except AgentRunNotFoundError as err:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err)) from err
     return to_run_response(session=session, service=service, run=run)
@@ -113,13 +114,12 @@ def propose_agent_action(
     request: AgentActionRequest,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    x_tenant_id: Annotated[str, Header(min_length=1, max_length=120)] = "default",
-    x_actor_id: Annotated[str, Header(min_length=1, max_length=120)] = "local-demo-user",
+    context: RequestContextDependency,
 ) -> AgentRunResponse:
     run = service.propose_action(
         session=session,
-        tenant_id=x_tenant_id,
-        actor_id=x_actor_id,
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
         tool_name=request.tool_name,
         classification=request.classification,
         arguments=request.arguments,
@@ -133,15 +133,14 @@ def decide_agent_approval(
     request: AgentApprovalDecisionRequest,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    x_tenant_id: Annotated[str, Header(min_length=1, max_length=120)] = "default",
-    x_actor_id: Annotated[str, Header(min_length=1, max_length=120)] = "local-demo-approver",
+    context: RequestContextDependency,
 ) -> AgentRunResponse:
     try:
         run = service.decide_approval(
             session=session,
             run_id=run_id,
-            tenant_id=x_tenant_id,
-            reviewer_id=x_actor_id,
+            tenant_id=context.tenant_id,
+            reviewer_id=context.actor_id,
             decision=request.decision,
             version=request.version,
         )
@@ -160,15 +159,14 @@ def execute_agent_action(
     request: AgentExecuteRequest,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    x_tenant_id: Annotated[str, Header(min_length=1, max_length=120)] = "default",
-    x_actor_id: Annotated[str, Header(min_length=1, max_length=120)] = "local-demo-executor",
+    context: RequestContextDependency,
 ) -> AgentRunResponse:
     try:
         run = service.execute_action(
             session=session,
             run_id=run_id,
-            tenant_id=x_tenant_id,
-            executor_id=x_actor_id,
+            tenant_id=context.tenant_id,
+            executor_id=context.actor_id,
             version=request.version,
         )
     except AgentRunNotFoundError as err:

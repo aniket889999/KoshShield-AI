@@ -54,9 +54,15 @@ def start_document_extraction(
     actor_id: str,
     settings: Settings,
     vault: EncryptedVault,
+    tenant_id: str = "default",
 ) -> ExtractionJob:
     """Queues and executes local extraction and PII detection for an encrypted document."""
-    document = session.get(DocumentRecord, document_id)
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == tenant_id,
+        )
+    )
     if not document:
         raise ValueError(f"Document not found: {document_id}")
 
@@ -73,6 +79,7 @@ def start_document_extraction(
 
     append_audit_event(
         session,
+        tenant_id=document.tenant_id,
         actor_id=actor_id,
         event_type="document.extraction_started",
         resource_type="document",
@@ -227,6 +234,7 @@ def start_document_extraction(
 
         append_audit_event(
             session,
+            tenant_id=document.tenant_id,
             actor_id=actor_id,
             event_type="document.extraction_completed",
             resource_type="document",
@@ -259,6 +267,7 @@ def start_document_extraction(
 
         append_audit_event(
             session,
+            tenant_id=tenant_id,
             actor_id=actor_id,
             event_type="document.extraction_failed",
             resource_type="document",
@@ -277,8 +286,18 @@ def update_finding_decision(
     decision: str,
     expected_version: int,
     actor_id: str,
+    tenant_id: str = "default",
 ) -> RedactionFinding:
     """Applies a human review decision to an individual PII finding with version locking."""
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == tenant_id,
+        )
+    )
+    if not document:
+        raise ValueError(f"Document {document_id} not found")
+
     finding = session.scalar(
         select(RedactionFinding).where(
             RedactionFinding.id == finding_id,
@@ -304,6 +323,7 @@ def update_finding_decision(
 
     append_audit_event(
         session,
+        tenant_id=document.tenant_id,
         actor_id=actor_id,
         event_type="redaction.finding_updated",
         resource_type="document",
@@ -326,8 +346,17 @@ def accept_all_high_confidence(
     document_id: str,
     actor_id: str,
     threshold: float = 0.85,
+    tenant_id: str = "default",
 ) -> int:
     """Accepts all pending findings whose confidence meets or exceeds the threshold."""
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == tenant_id,
+        )
+    )
+    if not document:
+        raise ValueError(f"Document {document_id} not found")
     findings = list(
         session.scalars(
             select(RedactionFinding).where(
@@ -347,6 +376,7 @@ def accept_all_high_confidence(
     if findings:
         append_audit_event(
             session,
+            tenant_id=document.tenant_id,
             actor_id=actor_id,
             event_type="redaction.high_confidence_accepted",
             resource_type="document",
@@ -367,9 +397,15 @@ def approve_redactions(
     document_id: str,
     actor_id: str,
     vault: EncryptedVault,
+    tenant_id: str = "default",
 ) -> DocumentRecord:
     """Finalizes redactions, generates deterministic masked text, and marks document INDEX_READY."""
-    document = session.get(DocumentRecord, document_id)
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == tenant_id,
+        )
+    )
     if not document:
         raise ValueError(f"Document not found: {document_id}")
 
@@ -503,6 +539,7 @@ def approve_redactions(
 
     append_audit_event(
         session,
+        tenant_id=document.tenant_id,
         actor_id=actor_id,
         event_type="redaction.approved",
         resource_type="document",

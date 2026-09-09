@@ -113,6 +113,7 @@ class AgentRunService:
             session=session,
             tool_name=tool_name,
             arguments=arguments,
+            tenant_id=tenant_id,
         )
         workflow_state = self.policy_workflow.evaluate(
             tool_name=tool_name,
@@ -154,6 +155,7 @@ class AgentRunService:
 
         append_audit_event(
             session,
+            tenant_id=tenant_id,
             actor_id=actor_id,
             event_type="AGENT_ACTION_PROPOSED" if allowed else "AGENT_ACTION_REJECTED",
             resource_type="agent_run",
@@ -210,6 +212,7 @@ class AgentRunService:
 
         append_audit_event(
             session,
+            tenant_id=tenant_id,
             actor_id=reviewer_id,
             event_type=(
                 "AGENT_ACTION_APPROVED"
@@ -264,6 +267,7 @@ class AgentRunService:
             session=session,
             tool_name=run.tool_name,
             arguments=run.arguments_json,
+            tenant_id=run.tenant_id,
         )
         assessment = self.policy_engine.evaluate(
             tool_name=run.tool_name,
@@ -310,6 +314,7 @@ class AgentRunService:
             run.updated_at = datetime.now(UTC)
             append_audit_event(
                 session,
+                tenant_id=tenant_id,
                 actor_id=executor_id,
                 event_type="AGENT_ACTION_COMPLETED",
                 resource_type="agent_run",
@@ -358,6 +363,7 @@ class AgentRunService:
         run.updated_at = datetime.now(UTC)
         append_audit_event(
             session,
+            tenant_id=run.tenant_id,
             actor_id=actor_id,
             event_type="AGENT_ACTION_REJECTED" if rejected else "AGENT_ACTION_FAILED",
             resource_type="agent_run",
@@ -379,6 +385,7 @@ class AgentRunService:
         session: Session,
         tool_name: str,
         arguments: dict[str, object],
+        tenant_id: str,
     ) -> bool:
         if tool_name != "document_report":
             return True
@@ -389,7 +396,12 @@ class AgentRunService:
             normalized_id = str(UUID(document_id))
         except ValueError:
             return False
-        document = session.get(DocumentRecord, normalized_id)
+        document = session.scalar(
+            select(DocumentRecord).where(
+                DocumentRecord.id == normalized_id,
+                DocumentRecord.tenant_id == tenant_id,
+            )
+        )
         return bool(document and document.status == DocumentState.INDEXED)
 
     @staticmethod
@@ -402,7 +414,12 @@ class AgentRunService:
             return dict(run.arguments_json)
 
         document_id = str(run.arguments_json["document_id"])
-        document = session.get(DocumentRecord, document_id)
+        document = session.scalar(
+            select(DocumentRecord).where(
+                DocumentRecord.id == document_id,
+                DocumentRecord.tenant_id == run.tenant_id,
+            )
+        )
         if not document or document.status != DocumentState.INDEXED:
             raise AgentRunConflictError("Document is no longer authorized for reporting")
         page_count = session.scalar(

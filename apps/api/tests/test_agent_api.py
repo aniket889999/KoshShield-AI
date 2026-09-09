@@ -92,7 +92,9 @@ def test_agent_action_requires_independent_approval_before_execution(
     assert completed["result_hash"]
     assert completed["state_history"][-3:] == ["EXECUTING", "VERIFYING", "COMPLETED"]
 
-    audit_payload = agent_client.get("/api/v1/audit/events?limit=20").text
+    audit_payload = agent_client.get(
+        "/api/v1/audit/events?limit=20", headers={"X-Tenant-ID": "finance"}
+    ).text
     assert expression not in audit_payload
     assert "AGENT_ACTION_PROPOSED" in audit_payload
     assert "AGENT_ACTION_APPROVED" in audit_payload

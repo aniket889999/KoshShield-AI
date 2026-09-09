@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from koshshield.schemas import (
     RetrievalStatusResponse,
     RetrievalVisualRegion,
 )
+from koshshield.security.context import RequestContextDependency
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.retrieval.chunking import DeterministicMaskedChunker
 from koshshield.services.retrieval.embeddings.bge_m3 import BgeM3EmbeddingProvider
@@ -98,15 +99,14 @@ def index_document(
     session: SessionDependency,
     indexing_service: Annotated[DocumentIndexingService, Depends(get_indexing_service)],
     settings: SettingsDependency,
-    x_tenant_id: str = Header(default="default"),
-    x_actor_id: str = Header(default="demo-admin"),
+    context: RequestContextDependency,
 ) -> IndexingStatusResponse:
     try:
         result = indexing_service.index_document(
             session=session,
             document_id=document_id,
-            actor_id=x_actor_id,
-            tenant_id=x_tenant_id,
+            actor_id=context.actor_id,
+            tenant_id=context.tenant_id,
         )
         return IndexingStatusResponse(
             document_id=result.document_id,
@@ -152,9 +152,14 @@ def get_document_indexing(
     document_id: str,
     session: SessionDependency,
     settings: SettingsDependency,
-    x_tenant_id: str = Header(default="default"),
+    context: RequestContextDependency,
 ) -> IndexingStatusResponse:
-    doc = session.scalar(select(DocumentRecord).where(DocumentRecord.id == document_id))
+    doc = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == context.tenant_id,
+        )
+    )
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
@@ -173,7 +178,7 @@ def get_document_indexing(
         chunk_count=int(chunk_count),
         redaction_version=doc.version,
         active_index_version=doc.active_index_version,
-        tenant_id=x_tenant_id,
+        tenant_id=doc.tenant_id,
         collection_name=settings.qdrant_collection,
         completed_at=doc.updated_at.isoformat() if doc.status == DocumentState.INDEXED else None,
     )
@@ -226,24 +231,18 @@ def search_retrieval(
     request: RetrievalSearchRequest,
     session: SessionDependency,
     retrieval_service: Annotated[HybridRetrievalService, Depends(get_retrieval_service)],
-    x_tenant_id: str = Header(default="default"),
-    x_actor_id: str = Header(default="demo-user"),
+    context: RequestContextDependency,
 ) -> RetrievalResponse:
-    """Executes local hybrid search across authorized masked document chunks.
-
-    NOTE: The 'X-Tenant-ID' request header is a demo security boundary,
-    not production authentication. Production deployments must bind tenant identity
-    to a verified cryptographic token (e.g. mutual TLS or signed JWT session).
-    """
+    """Executes local hybrid search across authorized masked document chunks."""
     try:
         evidence_pack = retrieval_service.search(
             query=request.query,
-            tenant_id=x_tenant_id,
+            tenant_id=context.tenant_id,
             permitted_document_ids=request.permitted_document_ids,
             classification=request.classification,
             top_k=request.top_k,
             session=session,
-            actor_id=x_actor_id,
+            actor_id=context.actor_id,
         )
 
         return RetrievalResponse(
@@ -312,16 +311,11 @@ def get_authorized_evidence_page_image(
     session: SessionDependency,
     settings: SettingsDependency,
     vector_store: Annotated[VectorStore, Depends(get_vector_store)],
-    x_tenant_id: str = Header(default="default"),
+    context: RequestContextDependency,
 ) -> Response:
-    """Return a cited page image only after tenant-scoped evidence authorization.
-
-    NOTE: The 'X-Tenant-ID' request header is a demo security boundary,
-    not production authentication. Production deployments must bind tenant identity
-    to a verified cryptographic token before serving any visual evidence.
-    """
+    """Return a cited page image only after tenant-scoped evidence authorization."""
     try:
-        hits = vector_store.retrieve_points(point_ids=[chunk_id], tenant_id=x_tenant_id)
+        hits = vector_store.retrieve_points(point_ids=[chunk_id], tenant_id=context.tenant_id)
     except VectorStoreUnavailableError as err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -347,7 +341,12 @@ def get_authorized_evidence_page_image(
             detail="Evidence payload is incomplete",
         ) from err
 
-    document = session.get(DocumentRecord, document_id)
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == context.tenant_id,
+        )
+    )
     if not document or document.status != DocumentState.INDEXED:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
     if document.sha256 != str(payload.get("document_evidence_hash") or ""):

@@ -87,6 +87,9 @@ class DocumentRecord(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(120), nullable=False, index=True, default="default"
+    )
     filename: Mapped[str] = mapped_column(String(255))
     media_type: Mapped[str] = mapped_column(String(80))
     size_bytes: Mapped[int] = mapped_column(Integer)
@@ -186,6 +189,9 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(120), nullable=False, index=True, default="default"
+    )
     actor_id: Mapped[str] = mapped_column(String(120))
     event_type: Mapped[str] = mapped_column(String(120), index=True)
     resource_type: Mapped[str] = mapped_column(String(80))

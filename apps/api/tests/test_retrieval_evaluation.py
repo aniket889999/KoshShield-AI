@@ -111,6 +111,7 @@ def test_deterministic_synthetic_pipeline_evaluation() -> None:
                 sha256=f"hash-{spec['doc_id']}-abcdef1234567890",
                 vault_path=f"vault/{spec['doc_id']}.ksh",
                 status=DocumentState.INDEX_READY,
+                tenant_id=spec["tenant"],
             )
             pages = [
                 DocumentPageRecord(
