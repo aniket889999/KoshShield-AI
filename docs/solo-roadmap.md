@@ -51,7 +51,11 @@
   - Demo role-based access control (RBAC) enforcing reviewer, approver, executor, auditor, and admin roles, with `X-Roles` permitted in CORS.
   - Strict 404 response on cross-tenant document, extraction, review, indexing, retrieval, visual evidence, audit, and agent operations to prevent resource enumeration.
   - Tenant-scoped retrieval telemetry (`GET /retrieval/status`).
-  - Offline integration test isolation: tests requiring live Docker Qdrant or real BGE-M3 model weights skip cleanly when those optional local services are absent.
+- **Checkpoint 1.2: Strict Schema Fingerprint Validation (Completed)**:
+  - Explicit dialect-aware schema contracts defining all 9 application tables, columns, primary keys, nullabilities, foreign keys, unique constraints, and indexes for legacy 0001 and current head schemas.
+  - Complete rejection of unmanaged partial databases, missing tables, missing columns, unexpected columns, incompatible constraints, and schema drift.
+  - Fail-safe startup and migration validation verifying both Alembic revision and actual physical schema layout without modifying database or creating alembic_version on validation failure.
+  - Reused validator across `bootstrap_and_upgrade`, direct Alembic execution (`env.py`), and application startup (`check_schema_at_head`).
 
 ## Milestone 4: multimodal retrieval (prototype - security hardening in progress)
 
