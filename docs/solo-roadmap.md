@@ -75,7 +75,7 @@
   - Admin-protected operational endpoint (`POST /api/v1/retrieval/cleanup-pending`) enforcing admin RBAC, production authentication barriers, tenant isolation, and bounded limits.
   - Sanitized `INDEX_CLEANUP_COMPLETED` and `INDEX_CLEANUP_FAILED` audit logging storing only tenant ID, document ID, active version, and stable failure codes.
 
-## Milestone 4: multimodal retrieval (prototype - security hardening in progress)
+## Milestone 4: multimodal retrieval (implemented and security hardened - live integration not executed)
 
 - Encrypted page images are captured during local extraction for PDFs and image uploads.
 - Masked visual region records are generated only after human redaction approval.
@@ -83,7 +83,18 @@
 - Indexed chunks include visual captions for caption-enriched retrieval without storing raw visual text.
 - Page images are served only through a tenant-scoped evidence endpoint tied to an active retrieved chunk.
 - Intelligence console can open authorized page evidence and highlight the cited region.
-- Qwen3-VL answer generation remains future work; the implemented boundary ensures it receives only authorized visual evidence when added.
+- **Checkpoint 3.1: Multimodal Privacy and Runtime Security Closure**:
+  - Encrypted masked-page-image vault derivatives created only upon explicit operator approval.
+  - Fail-closed redaction verification: any unlocated PII or post-masking OCR detection blocks visual evidence (`BLOCKED_UNLOCATED_PII`).
+  - Evidence images served exclusively as redacted derivatives, never original images.
+  - Strict input-size and dimension limits applied before decode and conversion.
+- **Checkpoint 3.2: Truthful llama.cpp Runtime Contract & Multimodal Security Closure**:
+  - Target contract pinned to **llama.cpp release `v0.4.0` (build `b10809`, commit `5266f24`)** and model alias `qwen3-vl-4b-instruct`.
+  - Authoritative fail-closed runtime preflight: checks `GET /v1/models` for exact model alias and `GET /props?model=...` for native `modalities.vision: true` and matching `build_info`.
+  - Strict Pydantic models for complete chat completion response (`choices`, `message`, `content`, `usage`) with extra fields forbidden and non-negative token counts; fails closed with sanitized HTTP 502 (`MODEL_RESPONSE_INVALID`).
+  - Hardened Pillow image decoding: request byte limits before decode, dimension verification before EXIF transpose and RGB conversion, and `DecompressionBombError` handling.
+  - Sanitized log events and API errors: raw exception interpolation, file paths, queries, and model output are completely removed.
+  - **Truthful integration notice**: Milestone 4 multimodal code path is fully implemented and tested with contract fixtures. Real Qwen3-VL plus llama.cpp integration remains **NOT EXECUTED** due to the intentional absence of model weights and local inference server processes. Local setup requires `--model` and `--mmproj` flags only; remote downloads, `-hf`, and external APIs are strictly prohibited.
 
 ## Milestone 5: policy-gated agent (prototype - security hardening in progress)
 

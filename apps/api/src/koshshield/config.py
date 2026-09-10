@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     tool_runner_timeout_seconds: int = Field(default=10, ge=1, le=60)
     tool_runner_max_output_bytes: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
     enable_multimodal_answering: bool = Field(default=False)
-    llama_cpp_model_id: str = "Qwen3VL-4B-Instruct"
+    llama_cpp_model_id: str = "qwen3-vl-4b-instruct"
+    llama_cpp_release: str = "v0.4.0"
+    llama_cpp_build: str = "b10809"
+    llama_cpp_commit: str = "5266f24"
     llama_cpp_service_name: str = "llama-server"
     llama_cpp_max_tokens: int = Field(default=512, ge=64, le=2048)
     llama_cpp_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)

@@ -1,0 +1,9 @@
+{
+  "build_info": "b10809-5266f24",
+  "modalities": {
+    "vision": true,
+    "audio": false
+  },
+  "total_slots": 1,
+  "model_path": "/opt/models/qwen3-vl/Qwen3-VL-4B-Instruct-GGUF"
+}

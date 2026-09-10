@@ -33,19 +33,20 @@ The implementation plan and architecture boundaries are documented in
 ## Development status
 
 Milestones 4 and 5 are currently functional prototypes undergoing active security
-boundary hardening. Checkpoint 1 and Checkpoint 1.1 enforce:
-- Authoritative non-null tenant ownership on documents and audit records (no database or ORM default fallbacks).
-- Mandatory `tenant_id` on document ingestion, audit events, and vector store telemetry.
-- Safe Alembic database migration management via `make migrate` supporting pre-Alembic database bootstrap and schema validation.
-- Startup schema validation in application lifespan that fails closed if the database is uninitialized or behind head.
-- Dual-version tamper-evident audit hash algorithm (`v1` for legacy records, `v2` for tenant-aware records) preserving legacy audit chains without recomputing historical hashes.
-- Centralized `RequestContext` dependency that permits header-derived identity strictly in demo mode and fails closed (HTTP 401) in production when verified authentication is absent.
-- Demo role-based access control (RBAC) enforcing reviewer, approver, executor, auditor, and admin roles, with `X-Roles` permitted in CORS.
-- Strict 404 response on cross-tenant document, extraction, review, indexing, retrieval, visual evidence, audit, and agent operations to prevent resource enumeration.
-- Tenant-scoped retrieval telemetry (`GET /retrieval/status`).
-- Real offline integration tests requiring live Docker Qdrant or local BGE-M3 weights skip cleanly when those optional local services are absent.
+boundary hardening. Completed checkpoints:
+- **Checkpoint 1 & 1.1**: Authoritative non-null tenant ownership on documents and audit records, safe Alembic database migrations, dual-version tamper-evident audit hash algorithm (`v1`/`v2`), centralized `RequestContext` failing closed in production, demo RBAC, cross-tenant isolation (strict 404), and tenant-scoped retrieval telemetry.
+- **Checkpoint 1.2**: Strict schema fingerprint validation across all application tables.
+- **Checkpoint 2 & 2.1 & 2.2**: Active-index retrieval filtering, crash-safe deferred index cleanup, universal error sanitization, and idempotent reindexing.
+- **Checkpoint 3.1 & 3.2: Multimodal Security Closure & Truthful Runtime Contract**:
+  - Pinned supported target runtime contract to **llama.cpp release `v0.4.0` (build `b10809`, commit `5266f24`)** with model alias `qwen3-vl-4b-instruct` and local GGUF/mmproj files only.
+  - Authoritative fail-closed runtime preflight verifying exact model alias via `GET /v1/models` and native `modalities.vision: true` and `build_info` via `GET /props?model=...`.
+  - Strict Pydantic schema validation on complete model completions (`choices`, `message`, `content`, `usage`) with extra fields forbidden and non-negative token counts; maps all validation errors to `LlamaCppResponseInvalidError` and sanitized HTTP 502.
+  - Pillow decompression-bomb defense and pre-conversion dimension checks (`max_image_dimension`).
+  - Privacy-safe visual evidence: unlocated PII blocks visual evidence (`BLOCKED_UNLOCATED_PII`), and only operator-approved redacted derivatives are served or fed to inference.
+  - Universal log and error sanitization: raw exceptions, tracebacks, queries, paths, OCR text, and model prompts/answers are never exposed or logged.
+  - **Truthful runtime integration status**: Real Qwen3-VL plus llama.cpp integration remains **NOT EXECUTED** because server processes and multi-gigabyte model weights are intentionally absent in the development repository. Local server startup must use local `--model` and `--mmproj` files only, never `-hf`, external URLs, or remote model APIs.
 
-Graph-assisted retrieval, Qwen3-VL multimodal generation, and gRPC interfaces remain paused
+Graph-assisted retrieval, live model inference execution, and gRPC interfaces remain paused
 until all security boundaries and hardening checkpoints are completed and verified.
 
 ## Local quick start

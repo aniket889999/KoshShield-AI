@@ -91,6 +91,9 @@ def get_llama_client(settings: SettingsDependency) -> LlamaCppMultimodalClient:
         base_url=settings.llama_base_url,
         model_id=settings.llama_cpp_model_id,
         service_name=settings.llama_cpp_service_name,
+        allowlisted_release=settings.llama_cpp_release,
+        allowlisted_build=settings.llama_cpp_build,
+        allowlisted_commit=settings.llama_cpp_commit,
         timeout_seconds=settings.llama_cpp_timeout_seconds,
         max_tokens=settings.llama_cpp_max_tokens,
     )
@@ -527,13 +530,13 @@ def get_authorized_evidence_page_image(
             path=Path(page.encrypted_masked_page_image_path),
         )
     except VaultConfigurationError as err:
-        logger.error("Vault configuration error: %s", err)
+        logger.error("Vault configuration error (VAULT_UNAVAILABLE)")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Vault storage is unavailable or misconfigured.",
         ) from err
     except Exception as err:
-        logger.error("Failed to decrypt evidence image derivative: %s", err)
+        logger.error("Failed to decrypt evidence image derivative (DECRYPTION_FAILED)")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evidence not found",
@@ -547,21 +550,27 @@ def get_authorized_evidence_page_image(
     if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
 
-    # Validate byte limit
-    if len(image_bytes) > settings.max_upload_bytes:
+    # Validate byte limit before decoding
+    if len(image_bytes) > min(2_500_000, settings.max_upload_bytes):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
 
-    # Validate dimension limits
+    # Configure decompression bomb limit and validate dimension limits
+    Image.MAX_IMAGE_PIXELS = settings.max_image_dimension * settings.max_image_dimension
     try:
         with Image.open(io.BytesIO(image_bytes)) as pil_img:
             w, h = pil_img.size
-            if w > settings.max_image_dimension or h > settings.max_image_dimension:
+            if (
+                w > settings.max_image_dimension
+                or h > settings.max_image_dimension
+                or (w * h) > Image.MAX_IMAGE_PIXELS
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found"
                 )
     except HTTPException:
         raise
-    except Exception as err:
+    except (Image.DecompressionBombError, Exception) as err:
+        logger.error("Failed to decode evidence image (DECODE_FAILED)")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found"
         ) from err
@@ -693,20 +702,22 @@ def answer_retrieval(
                 # Enforce bound on image bytes (max 2.5MB and upload limit)
                 if len(img_bytes) > min(2_500_000, settings.max_upload_bytes):
                     continue
-                # Dimension checks with Pillow
+                # Dimension checks with Pillow and decompression bomb protection
+                Image.MAX_IMAGE_PIXELS = settings.max_image_dimension * settings.max_image_dimension
                 with Image.open(io.BytesIO(img_bytes)) as pil_img:
                     w, h = pil_img.size
-                    if w > settings.max_image_dimension or h > settings.max_image_dimension:
+                    if (
+                        w > settings.max_image_dimension
+                        or h > settings.max_image_dimension
+                        or (w * h) > Image.MAX_IMAGE_PIXELS
+                    ):
                         continue
 
                 b64_str = base64.b64encode(img_bytes).decode("ascii")
                 masked_images_data_urls.append(f"data:image/png;base64,{b64_str}")
                 masked_image_hashes.append(page_rec.masked_page_image_sha256)
-            except Exception as decrypt_err:
-                logger.warning(
-                    "Failed to decrypt or validate masked derivative for multimodal context: %s",
-                    decrypt_err,
-                )
+            except Exception:
+                logger.warning("Failed to decrypt/validate masked derivative (DERIVATIVE_INVALID)")
 
     # 4. Format chunks into bounded untrusted context
     evidence_dicts = [

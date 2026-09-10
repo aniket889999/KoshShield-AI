@@ -138,29 +138,48 @@ def generate_masked_page_image_derivative(
             evidence_hash=page.page_image_sha256,
             path=Path(page.encrypted_page_image_path),
         )
-    except Exception as err:
-        logger.error("Failed to decrypt original page image for doc '%s': %s", document_id, err)
+    except Exception:
+        logger.error("Failed to decrypt original page image (BLOCKED_DECRYPTION_FAILED)")
         return None, None, None, "BLOCKED_DECRYPTION_FAILED"
 
-    # Decode with Pillow, apply EXIF orientation, strip metadata, and normalize to RGB
+    # Enforce request byte limits before decoding
+    max_decode_bytes = 10 * 1024 * 1024
+    if len(raw_image_bytes) > max_decode_bytes:
+        logger.warning("Original page image exceeds byte limits (BLOCKED_DECODE_FAILED)")
+        return None, None, None, "BLOCKED_DECODE_FAILED"
+
+    # Configure and handle Pillow decompression-bomb limit
+    Image.MAX_IMAGE_PIXELS = max_image_dimension * max_image_dimension
+
+    # Inspect image dimensions BEFORE EXIF transpose and RGB conversion
     try:
         with Image.open(io.BytesIO(raw_image_bytes)) as pil_img:
+            w, h = pil_img.size
+            if (
+                w > max_image_dimension
+                or h > max_image_dimension
+                or (w * h) > Image.MAX_IMAGE_PIXELS
+            ):
+                logger.warning("Image exceeds maximum bounds (BLOCKED_DIMENSION_LIMIT_EXCEEDED)")
+                return None, None, None, "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
+
             img = ImageOps.exif_transpose(pil_img)
-            img = img.convert("RGB")
-    except Exception as err:
-        logger.error("Failed to decode page image with Pillow: %s", err)
+            if img.width > max_image_dimension or img.height > max_image_dimension:
+                logger.warning(
+                    "Transposed image dimensions exceed maximum (BLOCKED_DIMENSION_LIMIT_EXCEEDED)"
+                )
+                return None, None, None, "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
+
+    except Image.DecompressionBombError:
+        logger.error(
+            "Image triggered Pillow DecompressionBombError (BLOCKED_DIMENSION_LIMIT_EXCEEDED)"
+        )
+        return None, None, None, "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
+    except Exception:
+        logger.error("Failed to decode page image with Pillow (BLOCKED_DECODE_FAILED)")
         return None, None, None, "BLOCKED_DECODE_FAILED"
 
     raster_width, raster_height = img.width, img.height
-    if raster_width > max_image_dimension or raster_height > max_image_dimension:
-        logger.warning(
-            "Page image dimensions (%dx%d) exceed maximum %d",
-            raster_width,
-            raster_height,
-            max_image_dimension,
-        )
-        return None, None, None, "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
-
     scale_x = (raster_width / page_width) if page_width > 0 else 1.0
     scale_y = (raster_height / page_height) if page_height > 0 else 1.0
 
@@ -193,13 +212,13 @@ def generate_masked_page_image_derivative(
     # Mandatory local OCR verification: APPROVED must mean OCR verification actually executed
     # and confirmed zero residual PII
     if ocr_adapter is None:
-        logger.warning("OCR adapter not provided; visual privacy cannot be verified.")
+        logger.warning("OCR adapter not provided (BLOCKED_OCR_UNAVAILABLE)")
         return None, None, None, "BLOCKED_OCR_UNAVAILABLE"
 
     try:
-        available, reason = ocr_adapter.is_available()
+        available, _ = ocr_adapter.is_available()
         if not available:
-            logger.warning("Local OCR is unavailable: %s; blocking derivative.", reason)
+            logger.warning("Local OCR is unavailable (BLOCKED_OCR_UNAVAILABLE)")
             return None, None, None, "BLOCKED_OCR_UNAVAILABLE"
 
         extracted = ocr_adapter.extract_image(
@@ -208,23 +227,20 @@ def generate_masked_page_image_derivative(
         )
         if extracted is None or not hasattr(extracted, "text"):
             logger.warning(
-                "Local OCR returned invalid extracted output for page %d", page.page_number
+                "Local OCR returned invalid extracted output (BLOCKED_OCR_VERIFICATION_FAILED)"
             )
             return None, None, None, "BLOCKED_OCR_VERIFICATION_FAILED"
-    except Exception as ocr_err:
-        logger.warning("Local OCR verification failed for page %d: %s", page.page_number, ocr_err)
+    except Exception:
+        logger.warning("Local OCR verification failed (BLOCKED_OCR_VERIFICATION_FAILED)")
         return None, None, None, "BLOCKED_OCR_VERIFICATION_FAILED"
 
     detector = IndianPiiDetector()
     residual_findings = detector.detect(extracted.text)
     if residual_findings:
-        logger.warning(
-            "Residual PII detected on page %d visual derivative; blocking derivative.",
-            page.page_number,
-        )
+        logger.warning("Residual PII detected on visual derivative (BLOCKED_RESIDUAL_PII)")
         return None, None, None, "BLOCKED_RESIDUAL_PII"
 
-    # Encrypt masked derivative into vault
+    # Encrypt masked derivative into vault ONLY after successful validation
     masked_artifact_id = f"{document_id}_p{page.page_number}_v{target_version}_masked_image"
     masked_sha256 = hashlib.sha256(masked_png_bytes).hexdigest()
     encrypted_path = vault.encrypt(

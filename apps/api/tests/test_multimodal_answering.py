@@ -63,7 +63,7 @@ def mock_multimodal_setup() -> tuple[
     fake_emb = DeterministicEmbeddingProvider()
     fake_store = InMemoryVectorStore()
     mock_client = MagicMock(spec=LlamaCppMultimodalClient)
-    mock_client.model_id = "Qwen3VL-4B-Instruct"
+    mock_client.model_id = "qwen3-vl-4b-instruct"
 
     app.dependency_overrides[get_embedding_provider] = lambda: fake_emb
     app.dependency_overrides[get_vector_store] = lambda: fake_store
@@ -107,24 +107,24 @@ def test_trust_env_false_and_no_redirects() -> None:
     # Verify that client initialization and call configuration forbids proxies and redirects
     client = LlamaCppMultimodalClient(base_url="http://localhost:8080/v1")
 
-    fixture_data = {
-        "data": [
-            {
-                "id": "Qwen3VL-4B-Instruct",
-                "architecture": {"input_modalities": ["text", "image"]},
-            }
-        ]
-    }
+    models_fixture = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_fixture = {"modalities": {"vision": True}, "build_info": "b10809-5266f24"}
 
     with patch("httpx.Client") as mock_httpx:
         mock_ctx = MagicMock()
         mock_httpx.return_value.__enter__.return_value = mock_ctx
-        mock_res = make_mock_stream_response(status_code=200, json_data=fixture_data)
-        mock_ctx.stream.return_value.__enter__.return_value = mock_res
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_fixture)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_fixture)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
 
         client.check_health_and_capability()
 
-        # Assert trust_env is False and follow_redirects is False
         mock_httpx.assert_called_with(
             trust_env=False,
             follow_redirects=False,
@@ -132,65 +132,142 @@ def test_trust_env_false_and_no_redirects() -> None:
         )
 
 
-def test_official_models_fixture_accepts_image_capability() -> None:
-    # Verify realistic captured llama.cpp b4600 /models response fixture
-    fixture_path = Path(__file__).parent / "fixtures" / "llama_cpp_b4600_models.json"
-    with open(fixture_path, encoding="utf-8") as f:
-        fixture_payload = json.load(f)
+def test_contract_fixtures_accept_configured_runtime_and_vision_modality() -> None:
+    models_path = Path(__file__).parent / "fixtures" / "llama_cpp_models_contract.json"
+    props_path = Path(__file__).parent / "fixtures" / "llama_cpp_props_contract.json"
+    with open(models_path, encoding="utf-8") as f:
+        models_payload = json.load(f)
+    with open(props_path, encoding="utf-8") as f:
+        props_payload = json.load(f)
 
     client = LlamaCppMultimodalClient(
-        base_url="http://localhost:8080/v1", model_id="Qwen3VL-4B-Instruct"
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
     )
 
     with patch("httpx.Client") as mock_httpx:
         mock_ctx = MagicMock()
         mock_httpx.return_value.__enter__.return_value = mock_ctx
-        mock_res = make_mock_stream_response(status_code=200, json_data=fixture_payload)
-        mock_ctx.stream.return_value.__enter__.return_value = mock_res
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
 
         model_info = client.check_health_and_capability()
-        assert model_info["id"] == "Qwen3VL-4B-Instruct"
-        assert "image" in model_info["architecture"]["input_modalities"]
+        assert model_info["id"] == "qwen3-vl-4b-instruct"
 
 
-def test_model_name_alone_cannot_establish_vision_capability() -> None:
-    # Even if model ID is "Qwen3VL-4B-Instruct", missing architecture.input_modalities must fail
+@pytest.mark.parametrize(
+    "rejected_build_info",
+    [
+        "b4600",
+        "b4600-abcdef",
+        {"build": "b4600", "commit": "5266f24"},
+        {"build": "b10809", "commit": "b4600"},
+        {"build": "b9999", "commit": "wrong_commit"},
+        "",
+        None,
+        12345,
+        {},
+    ],
+)
+def test_b4600_and_mismatched_builds_are_rejected(rejected_build_info: Any) -> None:
     client = LlamaCppMultimodalClient(
-        base_url="http://localhost:8080/v1", model_id="Qwen3VL-4B-Instruct"
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
     )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {
+        "modalities": {"vision": True},
+        "build_info": rejected_build_info,
+    }
 
     with patch("httpx.Client") as mock_httpx:
         mock_ctx = MagicMock()
         mock_httpx.return_value.__enter__.return_value = mock_ctx
 
-        # Case 1: missing architecture
-        mock_ctx.stream.return_value.__enter__.return_value = make_mock_stream_response(
-            status_code=200,
-            json_data={"data": [{"id": "Qwen3VL-4B-Instruct"}]},
-        )
-        with pytest.raises(LlamaCppIncapableError, match="lacks authoritative vision modalities"):
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        with pytest.raises(LlamaCppIncapableError, match="does not match allowlisted target build"):
             client.check_health_and_capability()
 
-        # Case 2: architecture has only text
-        mock_ctx.stream.return_value.__enter__.return_value = make_mock_stream_response(
-            status_code=200,
-            json_data={
-                "data": [
-                    {
-                        "id": "Qwen3VL-4B-Instruct",
-                        "architecture": {"input_modalities": ["text"]},
-                    }
-                ]
-            },
-        )
-        with pytest.raises(LlamaCppIncapableError, match="lacks authoritative vision modalities"):
+
+@pytest.mark.parametrize(
+    "vision_val",
+    [
+        False,
+        None,
+        "true",
+        1,
+        [],
+    ],
+)
+def test_missing_and_false_vision_modality_fails_closed(vision_val: Any) -> None:
+    client = LlamaCppMultimodalClient(
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
+    )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {
+        "modalities": {"vision": vision_val} if vision_val is not None else {},
+        "build_info": "b10809-5266f24",
+    }
+
+    with patch("httpx.Client") as mock_httpx:
+        mock_ctx = MagicMock()
+        mock_httpx.return_value.__enter__.return_value = mock_ctx
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        with pytest.raises(LlamaCppIncapableError, match="authoritative vision capability"):
+            client.check_health_and_capability()
+
+
+def test_missing_modalities_object_fails_closed() -> None:
+    client = LlamaCppMultimodalClient(
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
+    )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {
+        "build_info": "b10809-5266f24",
+    }
+    with patch("httpx.Client") as mock_httpx:
+        mock_ctx = MagicMock()
+        mock_httpx.return_value.__enter__.return_value = mock_ctx
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        with pytest.raises(LlamaCppIncapableError, match="missing authoritative modalities"):
             client.check_health_and_capability()
 
 
 def test_exact_model_alias_matching() -> None:
     # Substring, prefix, suffix or case mismatch must NOT match
     client = LlamaCppMultimodalClient(
-        base_url="http://localhost:8080/v1", model_id="Qwen3VL-4B-Instruct"
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
     )
 
     with patch("httpx.Client") as mock_httpx:
@@ -200,14 +277,7 @@ def test_exact_model_alias_matching() -> None:
         # Case mismatch
         mock_ctx.stream.return_value.__enter__.return_value = make_mock_stream_response(
             status_code=200,
-            json_data={
-                "data": [
-                    {
-                        "id": "qwen3vl-4b-instruct",
-                        "architecture": {"input_modalities": ["text", "image"]},
-                    }
-                ]
-            },
+            json_data={"data": [{"id": "Qwen3-VL-4B-Instruct"}]},
         )
         with pytest.raises(LlamaCppIncapableError, match="not found on llama.cpp server"):
             client.check_health_and_capability()
@@ -215,17 +285,40 @@ def test_exact_model_alias_matching() -> None:
         # Substring / variant mismatch
         mock_ctx.stream.return_value.__enter__.return_value = make_mock_stream_response(
             status_code=200,
-            json_data={
-                "data": [
-                    {
-                        "id": "Qwen3VL-4B-Instruct-Q4",
-                        "architecture": {"input_modalities": ["text", "image"]},
-                    }
-                ]
-            },
+            json_data={"data": [{"id": "qwen3-vl-4b-instruct-q4"}]},
         )
         with pytest.raises(LlamaCppIncapableError, match="not found on llama.cpp server"):
             client.check_health_and_capability()
+
+
+def test_router_mode_props_safely_encoded_selector() -> None:
+    client = LlamaCppMultimodalClient(
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
+    )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {
+        "modalities": {"vision": True},
+        "build_info": "b10809-5266f24",
+    }
+    called_urls: list[str] = []
+    with patch("httpx.Client") as mock_httpx:
+        mock_ctx = MagicMock()
+        mock_httpx.return_value.__enter__.return_value = mock_ctx
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            called_urls.append(url)
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        client.check_health_and_capability()
+
+        # props must be requested with safely encoded model parameter on base url without /v1
+        assert "http://localhost:8080/props?model=qwen3-vl-4b-instruct" in called_urls
 
 
 def test_single_capability_check_per_generation_attempt(
@@ -296,17 +389,20 @@ def test_single_capability_check_per_generation_attempt(
     # Use a real LlamaCppMultimodalClient instance backed by mocked httpx streaming
     real_llama = LlamaCppMultimodalClient(
         base_url="http://localhost:8080/v1",
-        model_id="Qwen3VL-4B-Instruct",
+        model_id="qwen3-vl-4b-instruct",
     )
     app.dependency_overrides[get_llama_client] = lambda: real_llama
 
     models_fixture = {
         "data": [
             {
-                "id": "Qwen3VL-4B-Instruct",
-                "architecture": {"input_modalities": ["text", "image"]},
+                "id": "qwen3-vl-4b-instruct",
             }
         ]
+    }
+    props_fixture = {
+        "modalities": {"vision": True},
+        "build_info": "b10809-5266f24",
     }
     chat_fixture = {
         "choices": [
@@ -331,6 +427,8 @@ def test_single_capability_check_per_generation_attempt(
         call_urls.append(url)
         if url.endswith("/models"):
             return make_mock_stream_response(status_code=200, json_data=models_fixture)
+        elif "/props" in url:
+            return make_mock_stream_response(status_code=200, json_data=props_fixture)
         elif url.endswith("/chat/completions"):
             return make_mock_stream_response(status_code=200, json_data=chat_fixture)
         return make_mock_stream_response(status_code=404, json_data={})
@@ -347,10 +445,12 @@ def test_single_capability_check_per_generation_attempt(
         )
         assert res.status_code == 200
 
-        # /models must be called exactly once
+        # /models, /props, and /chat/completions must each be called exactly once
         models_calls = [u for u in call_urls if u.endswith("/models")]
+        props_calls = [u for u in call_urls if "/props" in u]
         chat_calls = [u for u in call_urls if u.endswith("/chat/completions")]
         assert len(models_calls) == 1, f"Expected 1 /models call, got {len(models_calls)}"
+        assert len(props_calls) == 1, f"Expected 1 /props call, got {len(props_calls)}"
         assert len(chat_calls) == 1, f"Expected 1 /chat/completions call, got {len(chat_calls)}"
 
 
@@ -420,17 +520,20 @@ def test_malformed_types_extra_fields_and_oversized_responses_fail_closed(
 
     real_llama = LlamaCppMultimodalClient(
         base_url="http://localhost:8080/v1",
-        model_id="Qwen3VL-4B-Instruct",
+        model_id="qwen3-vl-4b-instruct",
     )
     app.dependency_overrides[get_llama_client] = lambda: real_llama
 
     models_fixture = {
         "data": [
             {
-                "id": "Qwen3VL-4B-Instruct",
-                "architecture": {"input_modalities": ["text", "image"]},
+                "id": "qwen3-vl-4b-instruct",
             }
         ]
+    }
+    props_fixture = {
+        "modalities": {"vision": True},
+        "build_info": "b10809-5266f24",
     }
 
     # Helper to test chat response variants
@@ -441,7 +544,7 @@ def test_malformed_types_extra_fields_and_oversized_responses_fail_closed(
             if isinstance(chat_content, str):
                 payload = {
                     "choices": [{"message": {"content": chat_content}}],
-                    "usage": {},
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
                 }
             else:
                 payload = chat_content
@@ -450,6 +553,8 @@ def test_malformed_types_extra_fields_and_oversized_responses_fail_closed(
         def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
             if url.endswith("/models"):
                 return make_mock_stream_response(status_code=200, json_data=models_fixture)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_fixture)
             return make_mock_stream_response(status_code=200, raw_bytes=raw_bytes)
 
         with patch("httpx.Client") as mock_httpx:
@@ -588,7 +693,7 @@ def test_no_raw_model_response_or_exception_appears_in_api_audit_log_captures(
 
     real_llama = LlamaCppMultimodalClient(
         base_url="http://localhost:8080/v1",
-        model_id="Qwen3VL-4B-Instruct",
+        model_id="qwen3-vl-4b-instruct",
     )
     app.dependency_overrides[get_llama_client] = lambda: real_llama
 
@@ -597,10 +702,13 @@ def test_no_raw_model_response_or_exception_appears_in_api_audit_log_captures(
     models_fixture = {
         "data": [
             {
-                "id": "Qwen3VL-4B-Instruct",
-                "architecture": {"input_modalities": ["text", "image"]},
+                "id": "qwen3-vl-4b-instruct",
             }
         ]
+    }
+    props_fixture = {
+        "modalities": {"vision": True},
+        "build_info": "b10809-5266f24",
     }
     malformed_chat_fixture = {
         "choices": [
@@ -611,6 +719,8 @@ def test_no_raw_model_response_or_exception_appears_in_api_audit_log_captures(
     def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
         if url.endswith("/models"):
             return make_mock_stream_response(status_code=200, json_data=models_fixture)
+        if "/props" in url:
+            return make_mock_stream_response(status_code=200, json_data=props_fixture)
         return make_mock_stream_response(status_code=200, json_data=malformed_chat_fixture)
 
     with patch("httpx.Client") as mock_httpx:
@@ -1144,3 +1254,180 @@ def test_real_llama_cpp_integration_skips_truthfully_when_unavailable() -> None:
         pytest.skip(
             f"Local llama.cpp server with Qwen3-VL is offline or incapable on localhost:8080: {err}"
         )
+
+
+_VALID_A = '{"answer": "A", "cited_chunk_ids": ["c1"], "insufficient_evidence": false}'
+_VALID_B = '{"answer": "B", "cited_chunk_ids": ["c1"], "insufficient_evidence": false}'
+
+
+@pytest.mark.parametrize(
+    "malformed_response",
+    [
+        {"choices": []},  # empty choices
+        {
+            "choices": [
+                {"message": {"content": _VALID_A}},
+                {"message": {"content": _VALID_B}},
+            ]
+        },  # duplicate choices (>1)
+        {"choices": [{"message": {}}]},  # missing content
+        {"choices": [{"message": {"content": 123}}]},  # non-string content
+        {"choices": "not-a-list"},  # choices is not a list
+        {
+            "choices": [{"message": {"content": _VALID_A}}],
+            "usage": {"prompt_tokens": -5, "completion_tokens": 10, "total_tokens": 5},
+        },  # negative tokens
+        {
+            "choices": [{"message": {"content": _VALID_A}}],
+            "usage": {"prompt_tokens": "invalid", "completion_tokens": 10, "total_tokens": 10},
+        },  # non-integer tokens
+        [],  # root is a list not a dict
+        {"unexpected_field": 123},  # missing choices
+    ],
+)
+def test_strict_pydantic_chat_completion_shapes_and_token_counts(
+    malformed_response: Any,
+) -> None:
+    from koshshield.services.retrieval.llama_cpp_client import LlamaCppResponseInvalidError
+
+    client = LlamaCppMultimodalClient(
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
+    )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {"modalities": {"vision": True}, "build_info": "b10809-5266f24"}
+
+    with patch("httpx.Client") as mock_httpx:
+        mock_ctx = MagicMock()
+        mock_httpx.return_value.__enter__.return_value = mock_ctx
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            if "/chat/completions" in url:
+                return make_mock_stream_response(status_code=200, json_data=malformed_response)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        with pytest.raises(LlamaCppResponseInvalidError):
+            client.generate_grounded_answer(
+                query="Test query",
+                evidence_chunks=[{"chunk_id": "c1", "masked_text": "text"}],
+                masked_images_data_urls=[],
+            )
+
+
+def test_image_decompression_bomb_and_dimension_limits_rejected() -> None:
+    import io
+    from unittest.mock import MagicMock, patch
+
+    from PIL import Image
+
+    from koshshield.models import DocumentPageRecord
+    from koshshield.services.retrieval.image_redaction import (
+        generate_masked_page_image_derivative,
+    )
+
+    mock_vault = MagicMock()
+    mock_page = DocumentPageRecord(
+        id="page-1",
+        document_id="doc-1",
+        page_number=1,
+        page_image_sha256="fake-hash",
+        encrypted_page_image_path="vault/fake.png",
+        width=200,
+        height=200,
+    )
+
+    # 1. Byte limit check before decode (> 10MB)
+    mock_vault.decrypt.return_value = b"\x89PNG\r\n\x1a\n" + b"X" * (10 * 1024 * 1024 + 10)
+    enc_path, sha, media_type, status = generate_masked_page_image_derivative(
+        vault=mock_vault,
+        document_id="doc-1",
+        page=mock_page,
+        accepted_findings=[],
+        target_version=1,
+    )
+    assert enc_path is None
+    assert status == "BLOCKED_DECODE_FAILED"
+
+    # 2. Dimension limit exceeded before transpose/conversion (> 4096)
+    test_img = Image.new("RGB", (5000, 100), color=(255, 255, 255))
+    buf = io.BytesIO()
+    test_img.save(buf, format="PNG")
+    mock_vault.decrypt.return_value = buf.getvalue()
+
+    enc_path, sha, media_type, status = generate_masked_page_image_derivative(
+        vault=mock_vault,
+        document_id="doc-1",
+        page=mock_page,
+        accepted_findings=[],
+        target_version=1,
+        max_image_dimension=4096,
+    )
+    assert enc_path is None
+    assert status == "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
+
+    # 3. Decompression bomb error caught cleanly
+    with patch("PIL.Image.open") as mock_open:
+        mock_open.side_effect = Image.DecompressionBombError("Decompression bomb detected")
+        mock_vault.decrypt.return_value = b"small-bytes"
+        enc_path, sha, media_type, status = generate_masked_page_image_derivative(
+            vault=mock_vault,
+            document_id="doc-1",
+            page=mock_page,
+            accepted_findings=[],
+            target_version=1,
+        )
+        assert enc_path is None
+        assert status == "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
+
+
+def test_b4600_rejected_and_absent_from_runtime_docs() -> None:
+    # 1. Runtime rejects b4600 build
+    client = LlamaCppMultimodalClient(
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
+    )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {"modalities": {"vision": True}, "build_info": "b4600-abcdef"}
+    with patch("httpx.Client") as mock_httpx:
+        mock_ctx = MagicMock()
+        mock_httpx.return_value.__enter__.return_value = mock_ctx
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        with pytest.raises(LlamaCppIncapableError, match="does not match allowlisted target build"):
+            client.check_health_and_capability()
+
+    # 2. Verify b4600 is absent from docs
+    repo_root = Path(__file__).parents[3]
+    docs_to_check = [
+        repo_root / "README.md",
+        repo_root / "docs" / "offline_multimodal_setup.md",
+        repo_root / "docs" / "solo-roadmap.md",
+    ]
+    for doc_path in docs_to_check:
+        if doc_path.exists():
+            content = doc_path.read_text(encoding="utf-8")
+            assert "b4600" not in content, f"Found legacy b4600 reference in {doc_path}"
+
+
+def test_no_outbound_network_download_or_hf_flags() -> None:
+    # Verify settings enforce local airgap and no HuggingFace / remote endpoints
+    from koshshield.config import get_settings
+
+    settings = get_settings()
+    assert not settings.llama_base_url.startswith("https://huggingface.co")
+    assert not settings.llama_base_url.startswith("https://")
+    # Verify client rejects non-loopback remote endpoints
+    with pytest.raises(LlamaCppSecurityError):
+        LlamaCppMultimodalClient(base_url="https://huggingface.co/models/v1")

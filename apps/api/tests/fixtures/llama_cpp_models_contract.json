@@ -1,0 +1,11 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "qwen3-vl-4b-instruct",
+      "object": "model",
+      "created": 1741500000,
+      "owned_by": "llamacpp"
+    }
+  ]
+}
