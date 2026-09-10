@@ -180,6 +180,34 @@ class RetrievalStatusResponse(BaseModel):
     indexed_documents_count: int
 
 
+class RetrievalAnswerRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=1000)
+    top_k: int = Field(default=5, ge=1, le=10)
+    permitted_document_ids: list[str] | None = None
+    classification: str | None = None
+
+
+class AnswerCitation(BaseModel):
+    chunk_id: str
+    citation_label: str
+    document_id: str
+    document_filename: str
+    page_number: int
+    evidence_hash: str
+    masked_content_hash: str
+    image_available: bool
+
+
+class RetrievalAnswerResponse(BaseModel):
+    answer: str
+    cited_chunk_ids: list[str]
+    citations: list[AnswerCitation]
+    insufficient_evidence: bool
+    model_id: str
+    duration_ms: float
+    tenant_id: str
+
+
 class CleanupPendingRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=100)
 

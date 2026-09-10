@@ -1,4 +1,6 @@
+import base64
 import logging
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -10,9 +12,12 @@ from koshshield.config import Settings, get_settings
 from koshshield.database import get_db
 from koshshield.models import DocumentChunkRecord, DocumentPageRecord, DocumentRecord, DocumentState
 from koshshield.schemas import (
+    AnswerCitation,
     CleanupPendingRequest,
     CleanupPendingResponse,
     IndexingStatusResponse,
+    RetrievalAnswerRequest,
+    RetrievalAnswerResponse,
     RetrievalEvidenceItem,
     RetrievalResponse,
     RetrievalSearchRequest,
@@ -24,7 +29,9 @@ from koshshield.security.context import (
     ExecutorContextDependency,
     RequestContextDependency,
 )
+from koshshield.security.pii.indian_pii import REDACTION_PLACEHOLDERS, IndianPiiDetector
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
+from koshshield.services.audit import record_audit_event
 from koshshield.services.retrieval.chunking import DeterministicMaskedChunker
 from koshshield.services.retrieval.embeddings.interfaces import (
     EmbeddingProvider,
@@ -32,6 +39,13 @@ from koshshield.services.retrieval.embeddings.interfaces import (
 )
 from koshshield.services.retrieval.hybrid_search import HybridRetrievalService
 from koshshield.services.retrieval.indexing_service import DocumentIndexingService
+from koshshield.services.retrieval.llama_cpp_client import (
+    LlamaCppClientError,
+    LlamaCppIncapableError,
+    LlamaCppMultimodalClient,
+    LlamaCppSecurityError,
+    LlamaCppUnavailableError,
+)
 from koshshield.services.retrieval.privacy_gate import (
     DocumentNotApprovedError,
     PrivacyGateError,
@@ -66,6 +80,16 @@ def get_vector_store(settings: SettingsDependency) -> VectorStore:
 
 def get_privacy_gate(settings: SettingsDependency) -> RetrievalPrivacyGate:
     return RetrievalPrivacyGate(pii_salt=settings.pii_salt)
+
+
+def get_llama_client(settings: SettingsDependency) -> LlamaCppMultimodalClient:
+    return LlamaCppMultimodalClient(
+        base_url=settings.llama_base_url,
+        model_id=settings.llama_cpp_model_id,
+        service_name=settings.llama_cpp_service_name,
+        timeout_seconds=settings.llama_cpp_timeout_seconds,
+        max_tokens=settings.llama_cpp_max_tokens,
+    )
 
 
 def get_indexing_service(
@@ -515,4 +539,258 @@ def get_authorized_evidence_page_image(
             "X-KoshShield-Evidence-Hash": document.sha256,
             "X-KoshShield-Masked-Image-Hash": page.masked_page_image_sha256,
         },
+    )
+
+
+@router.post(
+    "/retrieval/answer",
+    response_model=RetrievalAnswerResponse,
+)
+def answer_retrieval(
+    request: RetrievalAnswerRequest,
+    session: SessionDependency,
+    settings: SettingsDependency,
+    retrieval_service: Annotated[HybridRetrievalService, Depends(get_retrieval_service)],
+    llama_client: Annotated[LlamaCppMultimodalClient, Depends(get_llama_client)],
+    context: RequestContextDependency,
+) -> RetrievalAnswerResponse:
+    """Executes grounded local multimodal answering using local Qwen3-VL and llama.cpp."""
+    # 1. Feature flag boundary check
+    if not settings.enable_multimodal_answering:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Multimodal answering feature is disabled.",
+        )
+
+    # 2. Check model health and multimodal capability
+    try:
+        llama_client.check_health_and_capability()
+    except LlamaCppIncapableError as err:
+        logger.warning("Local multimodal model incapable: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Local multimodal model lacks vision capability.",
+        ) from err
+    except LlamaCppUnavailableError as err:
+        logger.warning("Local multimodal server unavailable: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Local multimodal answering service is unavailable.",
+        ) from err
+    except LlamaCppSecurityError as err:
+        logger.warning("Local multimodal service security error: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid local model service configuration.",
+        ) from err
+
+    start_time = time.perf_counter()
+
+    # 3. Hybrid search first (bound top_k to at most 5)
+    top_k = min(request.top_k, 5)
+    evidence_pack = retrieval_service.search(
+        query=request.query,
+        tenant_id=context.tenant_id,
+        permitted_document_ids=request.permitted_document_ids,
+        classification=request.classification,
+        top_k=top_k,
+        session=session,
+        actor_id=context.actor_id,
+    )
+
+    selected_chunks = evidence_pack.items[:5]
+    if not selected_chunks:
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        record_audit_event(
+            session=session,
+            tenant_id=context.tenant_id,
+            actor_id=context.actor_id,
+            event_type="MULTIMODAL_ANSWER_GENERATED",
+            resource_type="retrieval",
+            resource_id=None,
+            details={
+                "actor_id": context.actor_id,
+                "tenant_id": context.tenant_id,
+                "query_length": len(request.query),
+                "selected_chunk_ids": [],
+                "masked_image_hashes": [],
+                "model_id": settings.llama_cpp_model_id,
+                "duration_ms": round(duration_ms, 2),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "policy_result": "ALLOWED",
+                "failure_code": "INSUFFICIENT_EVIDENCE",
+            },
+        )
+        session.commit()
+        return RetrievalAnswerResponse(
+            answer="Insufficient evidence to answer query.",
+            cited_chunk_ids=[],
+            citations=[],
+            insufficient_evidence=True,
+            model_id=settings.llama_cpp_model_id,
+            duration_ms=round(duration_ms, 2),
+            tenant_id=context.tenant_id,
+        )
+
+    # 4. Gather at most 2 masked derivative images matching active versions
+    vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)
+    masked_images_data_urls: list[str] = []
+    masked_image_hashes: list[str] = []
+    seen_pages: set[tuple[str, int]] = set()
+
+    for chunk in selected_chunks:
+        if len(masked_images_data_urls) >= 2:
+            break
+        page_key = (chunk.document_id, chunk.page_number)
+        if page_key in seen_pages:
+            continue
+        seen_pages.add(page_key)
+
+        page_rec = session.scalar(
+            select(DocumentPageRecord).where(
+                DocumentPageRecord.document_id == chunk.document_id,
+                DocumentPageRecord.page_number == chunk.page_number,
+            )
+        )
+        if (
+            page_rec
+            and page_rec.visual_privacy_status == "APPROVED"
+            and page_rec.visual_redaction_version == chunk.index_version
+            and page_rec.encrypted_masked_page_image_path
+            and page_rec.masked_page_image_sha256
+        ):
+            try:
+                ver = page_rec.visual_redaction_version
+                masked_artifact_id = f"{chunk.document_id}_p{chunk.page_number}_v{ver}_masked_image"
+                img_bytes = vault.decrypt(
+                    document_id=masked_artifact_id,
+                    evidence_hash=page_rec.masked_page_image_sha256,
+                    path=Path(page_rec.encrypted_masked_page_image_path),
+                )
+                # Enforce bound on image bytes (max 2.5MB per image)
+                if len(img_bytes) <= 2_500_000:
+                    media_type = page_rec.masked_page_image_media_type or "image/png"
+                    b64_str = base64.b64encode(img_bytes).decode("ascii")
+                    masked_images_data_urls.append(f"data:{media_type};base64,{b64_str}")
+                    masked_image_hashes.append(page_rec.masked_page_image_sha256)
+            except Exception as decrypt_err:
+                logger.warning(
+                    "Failed to decrypt masked derivative for multimodal context: %s", decrypt_err
+                )
+
+    # 5. Format chunks into bounded untrusted context
+    evidence_dicts = [
+        {
+            "chunk_id": c.chunk_id,
+            "document_filename": c.document_filename,
+            "page_number": c.page_number,
+            "masked_snippet": c.masked_snippet[:1500],
+        }
+        for c in selected_chunks
+    ]
+
+    # 6. Model generation with structured output
+    try:
+        model_result = llama_client.generate_grounded_answer(
+            query=request.query,
+            evidence_chunks=evidence_dicts,
+            masked_images_data_urls=masked_images_data_urls,
+        )
+    except LlamaCppIncapableError as err:
+        logger.warning("Local multimodal model lacks vision capability: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Local multimodal model lacks vision capability.",
+        ) from err
+    except (LlamaCppUnavailableError, LlamaCppClientError) as err:
+        logger.warning("Local multimodal answer generation failed: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Local multimodal answering service is unavailable.",
+        ) from err
+
+    # 7. Grounding validation & authoritative citation reconstruction
+    allowed_chunk_map = {c.chunk_id: c for c in selected_chunks}
+    candidate_cids = model_result.get("cited_chunk_ids", [])
+    valid_cids: list[str] = []
+    seen_cids: set[str] = set()
+    for cid in candidate_cids:
+        if cid in allowed_chunk_map and cid not in seen_cids:
+            valid_cids.append(cid)
+            seen_cids.add(cid)
+
+    insufficient = bool(model_result.get("insufficient_evidence", False))
+    raw_answer = str(model_result.get("answer", "")).strip()
+
+    # A substantive answer requires at least one valid citation from retrieved evidence
+    if not valid_cids:
+        insufficient = True
+        final_answer = "Insufficient verified evidence to answer the query."
+        citations = []
+    else:
+        final_answer = raw_answer if raw_answer else "Answer based on verified evidence."
+        citations = [
+            AnswerCitation(
+                chunk_id=cid,
+                citation_label=allowed_chunk_map[cid].citation_label,
+                document_id=allowed_chunk_map[cid].document_id,
+                document_filename=allowed_chunk_map[cid].document_filename,
+                page_number=allowed_chunk_map[cid].page_number,
+                evidence_hash=allowed_chunk_map[cid].evidence_hash,
+                masked_content_hash=allowed_chunk_map[cid].masked_content_hash,
+                image_available=bool(allowed_chunk_map[cid].visual_regions),
+            )
+            for cid in valid_cids
+        ]
+
+    # 8. Output PII detection & masking
+    detector = IndianPiiDetector()
+    pii_findings = detector.detect(final_answer)
+    if pii_findings:
+        for f in sorted(pii_findings, key=lambda x: x.start, reverse=True):
+            placeholder = REDACTION_PLACEHOLDERS.get(f.finding_type, "[REDACTED]")
+            final_answer = final_answer[: f.start] + placeholder + final_answer[f.end :]
+        if detector.detect(final_answer):
+            final_answer = "Response blocked due to residual sensitive information."
+            insufficient = True
+            citations = []
+            valid_cids = []
+
+    duration_ms = (time.perf_counter() - start_time) * 1000.0
+
+    # 9. Privacy-safe auditing: strictly metadata only
+    record_audit_event(
+        session=session,
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        event_type="MULTIMODAL_ANSWER_GENERATED",
+        resource_type="retrieval",
+        resource_id=None,
+        details={
+            "actor_id": context.actor_id,
+            "tenant_id": context.tenant_id,
+            "query_length": len(request.query),
+            "selected_chunk_ids": [c.chunk_id for c in selected_chunks],
+            "masked_image_hashes": masked_image_hashes,
+            "model_id": settings.llama_cpp_model_id,
+            "duration_ms": round(duration_ms, 2),
+            "prompt_tokens": model_result.get("prompt_tokens", 0),
+            "completion_tokens": model_result.get("completion_tokens", 0),
+            "total_tokens": model_result.get("total_tokens", 0),
+            "policy_result": "ALLOWED",
+            "failure_code": None if not insufficient else "INSUFFICIENT_EVIDENCE",
+        },
+    )
+    session.commit()
+
+    return RetrievalAnswerResponse(
+        answer=final_answer,
+        cited_chunk_ids=valid_cids,
+        citations=citations,
+        insufficient_evidence=insufficient,
+        model_id=settings.llama_cpp_model_id,
+        duration_ms=round(duration_ms, 2),
+        tenant_id=context.tenant_id,
     )

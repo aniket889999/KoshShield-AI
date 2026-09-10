@@ -309,6 +309,44 @@ export function searchRetrieval(params: {
   });
 }
 
+export interface AnswerCitation {
+  chunk_id: string;
+  citation_label: string;
+  document_id: string;
+  document_filename: string;
+  page_number: number;
+  evidence_hash: string;
+  masked_content_hash: string;
+  image_available: boolean;
+}
+
+export interface RetrievalAnswerResponse {
+  answer: string;
+  cited_chunk_ids: string[];
+  citations: AnswerCitation[];
+  insufficient_evidence: boolean;
+  model_id: string;
+  duration_ms: number;
+  tenant_id: string;
+}
+
+export function generateCitedAnswer(params: {
+  query: string;
+  top_k?: number;
+  permitted_document_ids?: string[];
+  classification?: string;
+}) {
+  return request<RetrievalAnswerResponse>("/retrieval/answer", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Actor-ID": "local-demo-user",
+      "X-Tenant-ID": "default",
+    },
+    body: JSON.stringify(params),
+  });
+}
+
 export async function fetchVisualEvidenceImage(chunkId: string) {
   const response = await fetch(
     `${API_BASE_URL}/retrieval/evidence/${encodeURIComponent(chunkId)}/page-image`,

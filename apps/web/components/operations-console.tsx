@@ -57,6 +57,7 @@ import {
   fetchVisualEvidenceImage,
   getAuditIntegrity,
   getDocumentRedactions,
+  generateCitedAnswer,
   getRetrievalStatus,
   getReviewQueue,
   getSystemStatus,
@@ -396,6 +397,33 @@ export function OperationsConsole() {
       top_k: searchTopK,
       permitted_document_ids: permittedIds,
     });
+  };
+
+  const answerMutation = useMutation({
+    mutationFn: (params: {
+      query: string;
+      top_k: number;
+      permitted_document_ids?: string[];
+    }) => generateCitedAnswer(params),
+  });
+
+  const handleGenerateAnswer = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!searchQuery.trim()) return;
+    const permittedIds =
+      searchDocFilter === "all" ? undefined : [searchDocFilter];
+    answerMutation.mutate({
+      query: searchQuery.trim(),
+      top_k: searchTopK,
+      permitted_document_ids: permittedIds,
+    });
+    if (!searchMutation.data) {
+      searchMutation.mutate({
+        query: searchQuery.trim(),
+        top_k: searchTopK,
+        permitted_document_ids: permittedIds,
+      });
+    }
   };
 
 
@@ -1429,6 +1457,30 @@ export function OperationsConsole() {
                         "Search Evidence"
                       )}
                     </button>
+                    <button
+                      type="button"
+                      className="search-submit-button answer-generate-button"
+                      onClick={handleGenerateAnswer}
+                      disabled={!searchQuery.trim() || answerMutation.isPending}
+                      style={{
+                        background: "var(--accent, #2563eb)",
+                        color: "#fff",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      {answerMutation.isPending ? (
+                        <>
+                          <Loader2 size={16} className="spin-loader" /> Answering…
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={16} />
+                          Generate cited answer
+                        </>
+                      )}
+                    </button>
                   </div>
 
                   <div className="search-filters-row">
@@ -1474,6 +1526,169 @@ export function OperationsConsole() {
 
                 {/* Search Feedback & Results Area */}
                 <div className="search-results-area">
+                  {/* Grounded Multimodal Answer Section */}
+                  {answerMutation.isPending && (
+                    <div
+                      className="search-loading-state answer-loading-state"
+                      style={{ marginBottom: "20px" }}
+                    >
+                      <Loader2 size={28} className="spin-loader" />
+                      <strong>Generating grounded answer with local Qwen3-VL…</strong>
+                      <span>
+                        Retrieving authoritative evidence passages and evaluating local multimodal context.
+                      </span>
+                    </div>
+                  )}
+
+                  {answerMutation.isError && (
+                    <div
+                      className="search-error-state answer-error-state"
+                      style={{ marginBottom: "20px" }}
+                    >
+                      <CircleAlert size={28} />
+                      <strong>Local multimodal answering unavailable</strong>
+                      <span>
+                        {answerMutation.error.message.includes("503") ||
+                        answerMutation.error.message.includes("unavailable") ||
+                        answerMutation.error.message.includes("disabled")
+                          ? "Local llama.cpp model server is offline or multimodal answering is disabled. Evidence search remains fully operable below."
+                          : answerMutation.error.message}
+                      </span>
+                    </div>
+                  )}
+
+                  {answerMutation.isSuccess && (
+                    <div
+                      className="grounded-answer-card"
+                      style={{
+                        marginBottom: "24px",
+                        padding: "20px",
+                        borderRadius: "8px",
+                        border: "1px solid var(--border, #374151)",
+                        background: "var(--card-bg, rgba(17, 24, 39, 0.7))",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: "12px",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <Sparkles size={18} style={{ color: "var(--accent, #60a5fa)" }} />
+                          <strong style={{ fontSize: "1.1rem" }}>Grounded Local Cited Answer</strong>
+                          <span
+                            className="fusion-pill"
+                            style={{ fontSize: "0.75rem", padding: "2px 8px", borderRadius: "12px" }}
+                          >
+                            {answerMutation.data.model_id}
+                          </span>
+                        </div>
+                        <span style={{ fontSize: "0.85rem", color: "var(--muted, #9ca3af)" }}>
+                          Generated in {answerMutation.data.duration_ms}ms
+                        </span>
+                      </div>
+
+                      {answerMutation.data.insufficient_evidence ? (
+                        <div
+                          style={{
+                            padding: "12px 16px",
+                            borderRadius: "6px",
+                            background: "rgba(234, 179, 8, 0.1)",
+                            border: "1px solid rgba(234, 179, 8, 0.3)",
+                            color: "#fbbf24",
+                            marginBottom: "12px",
+                          }}
+                        >
+                          <p style={{ margin: 0 }}>
+                            {answerMutation.data.answer ||
+                              "Insufficient evidence to answer the query truthfully from verified local documents."}
+                          </p>
+                        </div>
+                      ) : (
+                        <div
+                          className="grounded-answer-text"
+                          style={{
+                            lineHeight: "1.6",
+                            fontSize: "0.95rem",
+                            marginBottom: "16px",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {answerMutation.data.answer}
+                        </div>
+                      )}
+
+                      {answerMutation.data.citations.length > 0 && (
+                        <div
+                          className="citations-section"
+                          style={{ borderTop: "1px solid var(--border, #374151)", paddingTop: "12px" }}
+                        >
+                          <span
+                            style={{
+                              fontSize: "0.8rem",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              color: "var(--muted, #9ca3af)",
+                              display: "block",
+                              marginBottom: "8px",
+                            }}
+                          >
+                            Validated Evidence Citations ({answerMutation.data.citations.length})
+                          </span>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                            {answerMutation.data.citations.map((c) => (
+                              <div
+                                key={c.chunk_id}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "6px",
+                                  padding: "4px 10px",
+                                  borderRadius: "6px",
+                                  background: "rgba(59, 130, 246, 0.15)",
+                                  border: "1px solid rgba(59, 130, 246, 0.3)",
+                                  fontSize: "0.85rem",
+                                }}
+                              >
+                                <span>{c.citation_label}</span>
+                                {c.image_available && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const matchedItem = searchMutation.data?.results.find(
+                                        (r) => r.chunk_id === c.chunk_id
+                                      );
+                                      if (matchedItem && matchedItem.visual_regions.length > 0) {
+                                        handleOpenVisualEvidence(
+                                          matchedItem,
+                                          matchedItem.visual_regions[0]
+                                        );
+                                      }
+                                    }}
+                                    style={{
+                                      background: "none",
+                                      border: "none",
+                                      color: "#60a5fa",
+                                      cursor: "pointer",
+                                      padding: "0 2px",
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                    }}
+                                    title="View Privacy-masked page evidence"
+                                  >
+                                    <ImageIcon size={14} />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {searchMutation.isPending && (
                     <div className="search-loading-state">
                       <Loader2 size={28} className="spin-loader" />

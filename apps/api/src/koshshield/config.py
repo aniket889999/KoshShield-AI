@@ -43,16 +43,23 @@ class Settings(BaseSettings):
     tool_runner_image: str = "koshshield-tool-runner:0.1.0"
     tool_runner_timeout_seconds: int = Field(default=10, ge=1, le=60)
     tool_runner_max_output_bytes: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
+    enable_multimodal_answering: bool = Field(default=False)
+    llama_cpp_model_id: str = "Qwen3VL-4B-Instruct"
+    llama_cpp_service_name: str = "llama-server"
+    llama_cpp_max_tokens: int = Field(default=512, ge=64, le=2048)
+    llama_cpp_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
 
     @field_validator("qdrant_url", "llama_base_url")
     @classmethod
     def require_local_service_url(cls, value: str) -> str:
         parsed = urlparse(value)
         host = parsed.hostname or ""
-        is_loopback = host in {"localhost", "127.0.0.1", "::1"}
-        is_container_name = bool(host) and "." not in host
-        if parsed.scheme not in {"http", "https"} or not (is_loopback or is_container_name):
-            raise ValueError("service URLs must target localhost or a private container name")
+        allowed_hosts = {"localhost", "127.0.0.1", "::1", "llama-server", "qdrant"}
+        if parsed.scheme not in {"http", "https"} or host not in allowed_hosts:
+            raise ValueError(
+                "service URLs must strictly target localhost (127.0.0.1, ::1) or "
+                "explicit local service names (llama-server, qdrant)"
+            )
         return value.rstrip("/")
 
     @property
