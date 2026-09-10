@@ -245,7 +245,7 @@ def _build_0001_contract() -> SchemaContract:
     return SchemaContract(revision_id="0001_initial_schema", tables=tables)
 
 
-def _build_head_contract() -> SchemaContract:
+def _build_0002_contract() -> SchemaContract:
     base = _build_0001_contract()
     tables = dict(base.tables)
 
@@ -275,12 +275,58 @@ def _build_head_contract() -> SchemaContract:
     return SchemaContract(revision_id="0002_add_tenant_ownership", tables=tables)
 
 
+def _build_head_contract() -> SchemaContract:
+    base = _build_0002_contract()
+    tables = dict(base.tables)
+
+    page_cols = dict(tables["document_pages"].columns)
+    page_cols["encrypted_masked_page_image_path"] = ColumnContract(
+        "encrypted_masked_page_image_path", nullable=True
+    )
+    page_cols["masked_page_image_sha256"] = ColumnContract(
+        "masked_page_image_sha256", nullable=True
+    )
+    page_cols["masked_page_image_media_type"] = ColumnContract(
+        "masked_page_image_media_type", nullable=True
+    )
+    page_cols["visual_privacy_status"] = ColumnContract("visual_privacy_status", nullable=False)
+    page_cols["visual_redaction_version"] = ColumnContract(
+        "visual_redaction_version", nullable=True
+    )
+    tables["document_pages"] = TableContract(
+        name="document_pages",
+        columns=page_cols,
+        forbidden_columns=(),
+        foreign_keys=tables["document_pages"].foreign_keys,
+        indexes=tables["document_pages"].indexes,
+        unique_constraints=tables["document_pages"].unique_constraints,
+    )
+
+    region_cols = dict(tables["document_visual_regions"].columns)
+    region_cols["tenant_id"] = ColumnContract("tenant_id", nullable=False)
+    region_cols["redaction_version"] = ColumnContract("redaction_version", nullable=False)
+    region_cols["masked_image_sha256"] = ColumnContract("masked_image_sha256", nullable=True)
+    tables["document_visual_regions"] = TableContract(
+        name="document_visual_regions",
+        columns=region_cols,
+        forbidden_columns=(),
+        foreign_keys=tables["document_visual_regions"].foreign_keys,
+        indexes=tables["document_visual_regions"].indexes
+        + (IndexContract(columns=("tenant_id",)),),
+        unique_constraints=tables["document_visual_regions"].unique_constraints,
+    )
+
+    return SchemaContract(revision_id="0003_visual_evidence_derivatives", tables=tables)
+
+
 SCHEMA_CONTRACT_0001 = _build_0001_contract()
+SCHEMA_CONTRACT_0002 = _build_0002_contract()
 SCHEMA_CONTRACT_HEAD = _build_head_contract()
 
 RECOGNIZED_REVISIONS: dict[str, SchemaContract] = {
     "0001_initial_schema": SCHEMA_CONTRACT_0001,
-    "0002_add_tenant_ownership": SCHEMA_CONTRACT_HEAD,
+    "0002_add_tenant_ownership": SCHEMA_CONTRACT_0002,
+    "0003_visual_evidence_derivatives": SCHEMA_CONTRACT_HEAD,
 }
 
 RECOGNIZED_TABLES = set(SCHEMA_CONTRACT_HEAD.tables.keys())

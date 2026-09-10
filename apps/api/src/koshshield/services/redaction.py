@@ -27,7 +27,9 @@ from koshshield.security.pii import (
 from koshshield.security.vault import EncryptedVault
 from koshshield.services.audit import append_audit_event
 from koshshield.services.extraction.interfaces import ExtractionError
+from koshshield.services.extraction.paddle_ocr import PaddleOcrAdapter
 from koshshield.services.extraction.service import UnifiedDocumentExtractor
+from koshshield.services.retrieval.image_redaction import generate_masked_page_image_derivative
 from koshshield.services.retrieval.visuals import build_visual_region_drafts
 
 
@@ -398,6 +400,7 @@ def approve_redactions(
     actor_id: str,
     vault: EncryptedVault,
     tenant_id: str = "default",
+    ocr_adapter: PaddleOcrAdapter | None = None,
 ) -> DocumentRecord:
     """Finalizes redactions, generates deterministic masked text, and marks document INDEX_READY."""
     document = session.scalar(
@@ -486,6 +489,24 @@ def approve_redactions(
         page.masked_text = masked_text
         page.masked_text_hash = masked_hash
 
+    target_version = document.version + 1
+
+    # Generate deterministic masked image derivatives for each page
+    for page in pages:
+        enc_path, masked_hash, media_type, visual_status = generate_masked_page_image_derivative(
+            vault=vault,
+            document_id=document_id,
+            page=page,
+            accepted_findings=findings_by_page.get(page.page_number, []),
+            target_version=target_version,
+            ocr_adapter=ocr_adapter,
+        )
+        page.encrypted_masked_page_image_path = str(enc_path) if enc_path else None
+        page.masked_page_image_sha256 = masked_hash
+        page.masked_page_image_media_type = media_type
+        page.visual_privacy_status = visual_status
+        page.visual_redaction_version = target_version
+
     existing_regions = list(
         session.scalars(
             select(DocumentVisualRegionRecord).where(
@@ -499,16 +520,23 @@ def approve_redactions(
     for page in pages:
         if not page.masked_text:
             continue
+        image_hash = (
+            page.masked_page_image_sha256 if page.visual_privacy_status == "APPROVED" else None
+        )
         for draft in build_visual_region_drafts(
+            tenant_id=document.tenant_id,
+            document_id=document_id,
             masked_text=page.masked_text,
             page_number=page.page_number,
             width=page.width,
             height=page.height,
-            image_sha256=page.page_image_sha256,
+            masked_image_sha256=image_hash,
+            redaction_version=target_version,
         ):
             session.add(
                 DocumentVisualRegionRecord(
-                    id=str(uuid4()),
+                    id=draft.region_id,
+                    tenant_id=draft.tenant_id,
                     document_id=document_id,
                     page_number=page.page_number,
                     region_sequence=draft.region_sequence,
@@ -517,14 +545,16 @@ def approve_redactions(
                     bbox_json=draft.bbox_json,
                     caption_text=draft.caption_text,
                     caption_hash=draft.caption_hash,
-                    image_sha256=draft.image_sha256,
+                    image_sha256=draft.masked_image_sha256,
+                    masked_image_sha256=draft.masked_image_sha256,
+                    redaction_version=draft.redaction_version,
                 )
             )
 
     # Transition to INDEX_READY
     validate_transition(document.status, DocumentState.INDEX_READY)
     document.status = DocumentState.INDEX_READY
-    document.version += 1
+    document.version = target_version
 
     rejected_count = len(
         list(

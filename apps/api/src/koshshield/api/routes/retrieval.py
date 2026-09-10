@@ -397,7 +397,9 @@ def get_authorized_evidence_page_image(
     vector_store: Annotated[VectorStore, Depends(get_vector_store)],
     context: RequestContextDependency,
 ) -> Response:
-    """Return a cited page image only after tenant-scoped evidence authorization."""
+    """Return a privacy-masked page image derivative only after
+    tenant-scoped evidence authorization.
+    """
     try:
         hits = vector_store.retrieve_points(point_ids=[chunk_id], tenant_id=context.tenant_id)
     except VectorStoreUnavailableError as err:
@@ -437,7 +439,22 @@ def get_authorized_evidence_page_image(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
     if document.sha256 != str(payload.get("document_evidence_hash") or ""):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
-    if document.active_index_version is not None and document.active_index_version != index_version:
+    if document.active_index_version is None or document.active_index_version != index_version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+
+    # Authoritative chunk validation against DB
+    db_chunk = session.scalar(
+        select(DocumentChunkRecord).where(
+            DocumentChunkRecord.chunk_id == chunk_id,
+            DocumentChunkRecord.document_id == document.id,
+            DocumentChunkRecord.index_version == index_version,
+        )
+    )
+    if not db_chunk or db_chunk.page_number != page_number:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+
+    payload_content_hash = str(payload.get("masked_content_hash") or "")
+    if payload_content_hash and payload_content_hash != db_chunk.masked_content_hash:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
 
     page = session.scalar(
@@ -446,23 +463,35 @@ def get_authorized_evidence_page_image(
             DocumentPageRecord.page_number == page_number,
         )
     )
-    if (
-        not page
-        or not page.encrypted_page_image_path
-        or not page.page_image_sha256
-        or not page.page_image_media_type
-    ):
+    if not page:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+
+    # Privacy and version checks for visual evidence derivative
+    if page.visual_privacy_status != "APPROVED":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Page visual evidence is unavailable",
+            detail="Visual evidence is unavailable or blocked for privacy safety",
+        )
+    if page.visual_redaction_version is None or page.visual_redaction_version != index_version:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Visual evidence version is stale or mismatched",
+        )
+    if not page.encrypted_masked_page_image_path or not page.masked_page_image_sha256:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Visual evidence derivative is missing",
         )
 
     try:
         vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)
+        masked_artifact_id = (
+            f"{document_id}_p{page_number}_v{page.visual_redaction_version}_masked_image"
+        )
         image_bytes = vault.decrypt(
-            document_id=f"{document_id}_p{page_number}_image",
-            evidence_hash=page.page_image_sha256,
-            path=Path(page.encrypted_page_image_path),
+            document_id=masked_artifact_id,
+            evidence_hash=page.masked_page_image_sha256,
+            path=Path(page.encrypted_masked_page_image_path),
         )
     except VaultConfigurationError as err:
         logger.error("Vault configuration error: %s", err)
@@ -471,7 +500,7 @@ def get_authorized_evidence_page_image(
             detail="Vault storage is unavailable or misconfigured.",
         ) from err
     except Exception as err:
-        logger.error("Failed to decrypt evidence image: %s", err)
+        logger.error("Failed to decrypt evidence image derivative: %s", err)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve visual evidence image.",
@@ -479,9 +508,11 @@ def get_authorized_evidence_page_image(
 
     return Response(
         content=image_bytes,
-        media_type=page.page_image_media_type,
+        media_type=page.masked_page_image_media_type or "image/png",
         headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
             "X-KoshShield-Evidence-Hash": document.sha256,
-            "X-KoshShield-Page-Image-Hash": page.page_image_sha256,
+            "X-KoshShield-Masked-Image-Hash": page.masked_page_image_sha256,
         },
     )

@@ -78,6 +78,11 @@ def _create_test_doc(
         page_image_sha256=_valid_hash(f"image_p1_{doc_id}"),
         encrypted_page_image_path=f"vault/{doc_id}_p1.png",
         page_image_media_type="image/png",
+        encrypted_masked_page_image_path=f"vault/{doc_id}_p1_v1_masked.png",
+        masked_page_image_sha256=_valid_hash(f"image_p1_{doc_id}"),
+        masked_page_image_media_type="image/png",
+        visual_privacy_status="APPROVED",
+        visual_redaction_version=1,
     )
     session.add(page)
     session.commit()
@@ -610,6 +615,19 @@ def test_api_and_audit_never_leak_injected_secrets(client: TestClient) -> None:
             version=1,
             status=DocumentState.INDEXED,
         )
+        chunk = DocumentChunkRecord(
+            id=str(uuid.uuid4()),
+            document_id="doc-leak-1",
+            page_number=1,
+            chunk_sequence=0,
+            index_version=1,
+            chunk_id="chunk-123",
+            char_start=0,
+            char_end=20,
+            masked_content_hash="m" * 64,
+        )
+        session.add(chunk)
+        session.commit()
 
     try:
         with patch(

@@ -234,6 +234,8 @@ class DocumentIndexingService:
             visual_regions_by_page = self._load_visual_regions_by_page(
                 session=session,
                 document_id=doc.id,
+                tenant_id=doc_tenant_id,
+                redaction_version=target_version,
             )
 
             # 3. Generate local BGE-M3 embeddings
@@ -571,21 +573,29 @@ class DocumentIndexingService:
         *,
         session: Session,
         document_id: str,
+        tenant_id: str | None = None,
+        redaction_version: int | None = None,
     ) -> dict[int, list[dict[str, object]]]:
-        records = list(
-            session.scalars(
-                select(DocumentVisualRegionRecord)
-                .where(DocumentVisualRegionRecord.document_id == document_id)
-                .order_by(
-                    DocumentVisualRegionRecord.page_number.asc(),
-                    DocumentVisualRegionRecord.region_sequence.asc(),
-                )
-            )
+        query = select(DocumentVisualRegionRecord).where(
+            DocumentVisualRegionRecord.document_id == document_id
         )
+        if tenant_id is not None:
+            query = query.where(DocumentVisualRegionRecord.tenant_id == tenant_id)
+        if redaction_version is not None:
+            query = query.where(DocumentVisualRegionRecord.redaction_version == redaction_version)
+
+        query = query.order_by(
+            DocumentVisualRegionRecord.page_number.asc(),
+            DocumentVisualRegionRecord.region_sequence.asc(),
+        )
+        records = list(session.scalars(query))
         regions_by_page: dict[int, list[dict[str, object]]] = {}
         for record in records:
             bbox_payload = record.bbox_json if isinstance(record.bbox_json, dict) else {}
             bbox = bbox_payload.get("bbox") if isinstance(bbox_payload.get("bbox"), list) else None
+            # Only masked derivative hash is allowed in retrieval payloads;
+            # never original image hash
+            masked_hash = record.masked_image_sha256 or record.image_sha256
             regions_by_page.setdefault(record.page_number, []).append(
                 {
                     "region_id": record.id,
@@ -596,8 +606,8 @@ class DocumentIndexingService:
                     "page_height": bbox_payload.get("page_height"),
                     "caption": record.caption_text,
                     "caption_hash": record.caption_hash,
-                    "image_sha256": record.image_sha256,
-                    "image_available": bool(record.image_sha256),
+                    "image_sha256": masked_hash,
+                    "image_available": bool(masked_hash),
                     "source": record.source,
                 }
             )

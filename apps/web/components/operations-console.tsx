@@ -1607,7 +1607,7 @@ export function OperationsConsole() {
                       {visualEvidence && (
                         <section className="visual-evidence-viewer" aria-label="Visual evidence">
                           <div className="visual-evidence-copy">
-                            <span className="section-kicker">Authorized page evidence</span>
+                            <span className="section-kicker">Privacy-masked page evidence</span>
                             <h3>{regionLabel(visualEvidence.region.region_type)}</h3>
                             <p>{visualEvidence.region.caption}</p>
                             <div className="visual-evidence-meta">

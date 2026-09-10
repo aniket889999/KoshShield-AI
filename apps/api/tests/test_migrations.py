@@ -193,7 +193,7 @@ def test_empty_database_upgrade() -> None:
     try:
         db_url = f"sqlite:///{db_path}"
         head_rev = bootstrap_and_upgrade(database_url=db_url)
-        assert head_rev == "0002_add_tenant_ownership"
+        assert head_rev == "0003_visual_evidence_derivatives"
 
         engine = create_engine(db_url)
         check_schema_at_head(engine)
@@ -208,6 +208,23 @@ def test_empty_database_upgrade() -> None:
             assert "hash_version" in audit_cols
             assert audit_cols["tenant_id"][3] == 1  # notnull
             assert audit_cols["hash_version"][3] == 1  # notnull
+
+            page_cols = {c[1]: c for c in conn.execute(text("PRAGMA table_info(document_pages)"))}
+            assert "encrypted_masked_page_image_path" in page_cols
+            assert "masked_page_image_sha256" in page_cols
+            assert "masked_page_image_media_type" in page_cols
+            assert "visual_privacy_status" in page_cols
+            assert "visual_redaction_version" in page_cols
+            assert page_cols["visual_privacy_status"][3] == 1  # notnull
+
+            reg_cols = {
+                c[1]: c for c in conn.execute(text("PRAGMA table_info(document_visual_regions)"))
+            }
+            assert "tenant_id" in reg_cols
+            assert "redaction_version" in reg_cols
+            assert "masked_image_sha256" in reg_cols
+            assert reg_cols["tenant_id"][3] == 1  # notnull
+            assert reg_cols["redaction_version"][3] == 1  # notnull
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
@@ -306,7 +323,7 @@ def test_genuine_pre_alembic_database_upgrade_with_data_preservation() -> None:
 
         # Run safe bootstrap and upgrade
         head_rev = bootstrap_and_upgrade(database_url=db_url)
-        assert head_rev == "0002_add_tenant_ownership"
+        assert head_rev == "0003_visual_evidence_derivatives"
 
         # Check startup validation now passes
         check_schema_at_head(engine)

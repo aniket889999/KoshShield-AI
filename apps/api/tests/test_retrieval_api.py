@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from koshshield.api.routes.retrieval import get_embedding_provider, get_vector_store
 from koshshield.database import engine
 from koshshield.main import app
-from koshshield.models import DocumentPageRecord, DocumentRecord, DocumentState
+from koshshield.models import DocumentChunkRecord, DocumentPageRecord, DocumentRecord, DocumentState
 from koshshield.security.vault import EncryptedVault
 from koshshield.services.retrieval.embeddings.deterministic_fake import (
     DeterministicEmbeddingProvider,
@@ -136,7 +136,7 @@ def test_visual_evidence_page_image_requires_tenant_scoped_chunk(
         os.environ["KOSHSHIELD_MASTER_KEY_BASE64"],
     )
     image_path = vault.encrypt(
-        document_id=f"{doc_id}_p1_image",
+        document_id=f"{doc_id}_p1_v2_masked_image",
         evidence_hash=image_hash,
         plaintext=image_bytes,
     )
@@ -165,9 +165,25 @@ def test_visual_evidence_page_image_requires_tenant_scoped_chunk(
             page_image_sha256=image_hash,
             page_image_media_type="image/png",
             encrypted_page_image_path=str(image_path),
+            encrypted_masked_page_image_path=str(image_path),
+            masked_page_image_sha256=image_hash,
+            masked_page_image_media_type="image/png",
+            visual_privacy_status="APPROVED",
+            visual_redaction_version=2,
             masked_text="Masked table content",
         )
-        session.add_all([doc, page])
+        chunk_rec = DocumentChunkRecord(
+            id=str(uuid.uuid4()),
+            document_id=doc_id,
+            page_number=1,
+            chunk_sequence=0,
+            index_version=2,
+            chunk_id=chunk_id,
+            char_start=0,
+            char_end=20,
+            masked_content_hash="m" * 64,
+        )
+        session.add_all([doc, page, chunk_rec])
         session.commit()
 
     emb = embedding_provider.embed_query("Masked table content")
@@ -200,6 +216,9 @@ def test_visual_evidence_page_image_requires_tenant_scoped_chunk(
     allowed = client.get(f"/api/v1/retrieval/evidence/{chunk_id}/page-image")
     assert allowed.status_code == 200
     assert allowed.headers["content-type"] == "image/png"
+    assert allowed.headers["cache-control"] == "no-store"
+    assert allowed.headers["x-content-type-options"] == "nosniff"
+    assert allowed.headers["x-koshshield-masked-image-hash"] == image_hash
     assert allowed.content == image_bytes
 
     blocked = client.get(
