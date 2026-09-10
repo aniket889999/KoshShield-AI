@@ -1,0 +1,24 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "Qwen3VL-4B-Instruct",
+      "object": "model",
+      "created": 1725600000,
+      "owned_by": "llamacpp",
+      "architecture": {
+        "modality": "multimodal",
+        "input_modalities": ["text", "image"],
+        "output_modalities": ["text"]
+      },
+      "meta": {
+        "vocab_type": 2,
+        "n_vocab": 152064,
+        "n_ctx_train": 32768,
+        "n_embd": 2560,
+        "n_params": 4000000000,
+        "size": 2500000000
+      }
+    }
+  ]
+}

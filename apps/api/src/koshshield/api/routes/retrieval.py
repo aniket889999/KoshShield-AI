@@ -46,6 +46,7 @@ from koshshield.services.retrieval.llama_cpp_client import (
     LlamaCppClientError,
     LlamaCppIncapableError,
     LlamaCppMultimodalClient,
+    LlamaCppResponseInvalidError,
     LlamaCppSecurityError,
     LlamaCppUnavailableError,
 )
@@ -597,31 +598,9 @@ def answer_retrieval(
             detail="Multimodal answering feature is disabled.",
         )
 
-    # 2. Check model health and multimodal capability
-    try:
-        llama_client.check_health_and_capability()
-    except LlamaCppIncapableError as err:
-        logger.warning("Local multimodal model incapable: %s", err)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Local multimodal model lacks vision capability.",
-        ) from err
-    except LlamaCppUnavailableError as err:
-        logger.warning("Local multimodal server unavailable: %s", err)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Local multimodal answering service is unavailable.",
-        ) from err
-    except LlamaCppSecurityError as err:
-        logger.warning("Local multimodal service security error: %s", err)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid local model service configuration.",
-        ) from err
-
     start_time = time.perf_counter()
 
-    # 3. Hybrid search first (bound top_k to at most 5)
+    # 2. Hybrid search first (bound top_k to at most 5)
     top_k = min(request.top_k, 5)
     evidence_pack = retrieval_service.search(
         query=request.query,
@@ -654,7 +633,7 @@ def answer_retrieval(
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
                 "total_tokens": 0,
-                "policy_result": "ALLOWED",
+                "policy_result": "INSUFFICIENT_EVIDENCE",
                 "failure_code": "INSUFFICIENT_EVIDENCE",
             },
         )
@@ -669,7 +648,7 @@ def answer_retrieval(
             tenant_id=context.tenant_id,
         )
 
-    # 4. Gather at most 2 masked derivative images matching active versions
+    # 3. Gather at most 2 masked derivative images matching active versions
     vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)
     masked_images_data_urls: list[str] = []
     masked_image_hashes: list[str] = []
@@ -729,7 +708,7 @@ def answer_retrieval(
                     decrypt_err,
                 )
 
-    # 5. Format chunks into bounded untrusted context
+    # 4. Format chunks into bounded untrusted context
     evidence_dicts = [
         {
             "chunk_id": c.chunk_id,
@@ -740,27 +719,165 @@ def answer_retrieval(
         for c in selected_chunks
     ]
 
-    # 6. Model generation with structured output
+    # 5. Model generation with structured output (performs exactly 1 capability check)
     try:
         model_result = llama_client.generate_grounded_answer(
             query=request.query,
             evidence_chunks=evidence_dicts,
             masked_images_data_urls=masked_images_data_urls,
         )
+    except LlamaCppResponseInvalidError as err:
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning("Local multimodal model response invalid (MODEL_RESPONSE_INVALID)")
+        record_audit_event(
+            session=session,
+            tenant_id=context.tenant_id,
+            actor_id=context.actor_id,
+            event_type="MULTIMODAL_ANSWER_GENERATED",
+            resource_type="retrieval",
+            resource_id=None,
+            details={
+                "actor_id": context.actor_id,
+                "tenant_id": context.tenant_id,
+                "query_length": len(request.query),
+                "selected_chunk_ids": [c.chunk_id for c in selected_chunks],
+                "masked_image_hashes": masked_image_hashes,
+                "model_id": settings.llama_cpp_model_id,
+                "duration_ms": round(duration_ms, 2),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "policy_result": "OUTPUT_BLOCKED",
+                "failure_code": "MODEL_RESPONSE_INVALID",
+            },
+        )
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Invalid response from local model service.",
+        ) from err
     except LlamaCppIncapableError as err:
-        logger.warning("Local multimodal model lacks vision capability: %s", err)
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning("Local multimodal model lacks vision capability (MODEL_INCAPABLE)")
+        record_audit_event(
+            session=session,
+            tenant_id=context.tenant_id,
+            actor_id=context.actor_id,
+            event_type="MULTIMODAL_ANSWER_GENERATED",
+            resource_type="retrieval",
+            resource_id=None,
+            details={
+                "actor_id": context.actor_id,
+                "tenant_id": context.tenant_id,
+                "query_length": len(request.query),
+                "selected_chunk_ids": [c.chunk_id for c in selected_chunks],
+                "masked_image_hashes": masked_image_hashes,
+                "model_id": settings.llama_cpp_model_id,
+                "duration_ms": round(duration_ms, 2),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "policy_result": "OUTPUT_BLOCKED",
+                "failure_code": "MODEL_INCAPABLE",
+            },
+        )
+        session.commit()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Local multimodal model lacks vision capability.",
         ) from err
-    except (LlamaCppUnavailableError, LlamaCppClientError) as err:
-        logger.warning("Local multimodal answer generation failed: %s", err)
+    except LlamaCppUnavailableError as err:
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning("Local multimodal answering service is unavailable (MODEL_UNAVAILABLE)")
+        record_audit_event(
+            session=session,
+            tenant_id=context.tenant_id,
+            actor_id=context.actor_id,
+            event_type="MULTIMODAL_ANSWER_GENERATED",
+            resource_type="retrieval",
+            resource_id=None,
+            details={
+                "actor_id": context.actor_id,
+                "tenant_id": context.tenant_id,
+                "query_length": len(request.query),
+                "selected_chunk_ids": [c.chunk_id for c in selected_chunks],
+                "masked_image_hashes": masked_image_hashes,
+                "model_id": settings.llama_cpp_model_id,
+                "duration_ms": round(duration_ms, 2),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "policy_result": "OUTPUT_BLOCKED",
+                "failure_code": "MODEL_UNAVAILABLE",
+            },
+        )
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Local multimodal answering service is unavailable.",
+        ) from err
+    except LlamaCppSecurityError as err:
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning("Local multimodal service security error (SSRF_BLOCKED)")
+        record_audit_event(
+            session=session,
+            tenant_id=context.tenant_id,
+            actor_id=context.actor_id,
+            event_type="MULTIMODAL_ANSWER_GENERATED",
+            resource_type="retrieval",
+            resource_id=None,
+            details={
+                "actor_id": context.actor_id,
+                "tenant_id": context.tenant_id,
+                "query_length": len(request.query),
+                "selected_chunk_ids": [c.chunk_id for c in selected_chunks],
+                "masked_image_hashes": masked_image_hashes,
+                "model_id": settings.llama_cpp_model_id,
+                "duration_ms": round(duration_ms, 2),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "policy_result": "OUTPUT_BLOCKED",
+                "failure_code": "SSRF_BLOCKED",
+            },
+        )
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid local model service configuration.",
+        ) from err
+    except LlamaCppClientError as err:
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        logger.warning("Local multimodal answer generation failed (MODEL_ERROR)")
+        record_audit_event(
+            session=session,
+            tenant_id=context.tenant_id,
+            actor_id=context.actor_id,
+            event_type="MULTIMODAL_ANSWER_GENERATED",
+            resource_type="retrieval",
+            resource_id=None,
+            details={
+                "actor_id": context.actor_id,
+                "tenant_id": context.tenant_id,
+                "query_length": len(request.query),
+                "selected_chunk_ids": [c.chunk_id for c in selected_chunks],
+                "masked_image_hashes": masked_image_hashes,
+                "model_id": settings.llama_cpp_model_id,
+                "duration_ms": round(duration_ms, 2),
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "policy_result": "OUTPUT_BLOCKED",
+                "failure_code": "MODEL_ERROR",
+            },
+        )
+        session.commit()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Local multimodal answering service is unavailable.",
         ) from err
 
-    # 7. Grounding validation & authoritative citation reconstruction
+    # 6. Grounding validation & authoritative citation reconstruction
     allowed_chunk_map = {c.chunk_id: c for c in selected_chunks}
     candidate_cids = model_result.get("cited_chunk_ids", [])
     valid_cids: list[str] = []
@@ -773,11 +890,12 @@ def answer_retrieval(
     insufficient = bool(model_result.get("insufficient_evidence", False))
     raw_answer = str(model_result.get("answer", "")).strip()
 
-    # A substantive answer requires at least one valid citation from retrieved evidence
-    if not valid_cids:
+    # Fixed insufficient-evidence response if insufficient_evidence is True or no valid citations
+    if insufficient or not valid_cids:
         insufficient = True
         final_answer = "Insufficient verified evidence to answer the query."
         citations = []
+        valid_cids = []
     else:
         final_answer = raw_answer if raw_answer else "Answer based on verified evidence."
         citations = [
@@ -796,18 +914,36 @@ def answer_retrieval(
             for cid in valid_cids
         ]
 
-    # 8. Output PII detection & masking
+    # 7. Output PII detection & masking
     detector = IndianPiiDetector()
     pii_findings = detector.detect(final_answer)
+    redacted = False
+    blocked = False
     if pii_findings:
         for f in sorted(pii_findings, key=lambda x: x.start, reverse=True):
             placeholder = REDACTION_PLACEHOLDERS.get(f.finding_type, "[REDACTED]")
             final_answer = final_answer[: f.start] + placeholder + final_answer[f.end :]
+        redacted = True
         if detector.detect(final_answer):
             final_answer = "Response blocked due to residual sensitive information."
             insufficient = True
             citations = []
             valid_cids = []
+            blocked = True
+
+    # 8. Determine truthful policy result
+    if blocked:
+        policy_result = "OUTPUT_BLOCKED"
+        failure_code = "RESIDUAL_PII_BLOCKED"
+    elif insufficient:
+        policy_result = "INSUFFICIENT_EVIDENCE"
+        failure_code = "INSUFFICIENT_EVIDENCE"
+    elif redacted:
+        policy_result = "OUTPUT_REDACTED"
+        failure_code = None
+    else:
+        policy_result = "ALLOWED"
+        failure_code = None
 
     duration_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -830,8 +966,8 @@ def answer_retrieval(
             "prompt_tokens": model_result.get("prompt_tokens", 0),
             "completion_tokens": model_result.get("completion_tokens", 0),
             "total_tokens": model_result.get("total_tokens", 0),
-            "policy_result": "ALLOWED",
-            "failure_code": None if not insufficient else "INSUFFICIENT_EVIDENCE",
+            "policy_result": policy_result,
+            "failure_code": failure_code,
         },
     )
     session.commit()

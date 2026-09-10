@@ -1,37 +1,67 @@
 import json
 import logging
-import re
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 logger = logging.getLogger(__name__)
+
+# Pinned supported llama.cpp build release / commit
+SUPPORTED_LLAMA_CPP_VERSION = "b4600"
 
 
 class LlamaCppClientError(Exception):
     """Base exception for llama.cpp multimodal client errors."""
 
+    failure_code: str = "MODEL_ERROR"
+
 
 class LlamaCppUnavailableError(LlamaCppClientError):
     """Raised when llama.cpp server is offline, timed out, or unreachable."""
+
+    failure_code: str = "MODEL_UNAVAILABLE"
 
 
 class LlamaCppIncapableError(LlamaCppClientError):
     """Raised when configured model lacks multimodal/vision capability or is missing."""
 
+    failure_code: str = "MODEL_INCAPABLE"
+
+
+class LlamaCppResponseInvalidError(LlamaCppClientError):
+    """Raised when model response is non-JSON, oversized, malformed, or violates schema."""
+
+    failure_code: str = "MODEL_RESPONSE_INVALID"
+
 
 class LlamaCppSecurityError(LlamaCppClientError):
     """Raised when request violates SSRF or security constraints."""
+
+    failure_code: str = "SSRF_BLOCKED"
+
+
+class GroundedModelOutput(BaseModel):
+    """Strict schema for generated grounded answer output from Qwen3-VL."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    answer: str = Field(..., max_length=10000)
+    cited_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
+    insufficient_evidence: StrictBool
 
 
 class LlamaCppMultimodalClient:
     """Local-first, air-gapped multimodal client for llama.cpp server with Qwen3-VL.
 
     Enforces:
+    - Pinned to supported llama.cpp release (SUPPORTED_LLAMA_CPP_VERSION = "b4600")
     - Strict host allowlist (localhost, 127.0.0.1, ::1, and explicit service name)
     - Anti-SSRF: rejects arbitrary single-label hosts, remote URLs, redirects, and proxies
-    - Bounded timeouts, response size limits, and trust_env=False
+    - Bounded timeouts, streamed response size limits, and trust_env=False
+    - Authoritative architecture.input_modalities verification for vision capabilities
+    - Strict Pydantic response validation without fallback heuristics
     - Zero external network access (no Hugging Face or remote downloads)
     - Data URLs for local privacy-masked derivatives only
     """
@@ -82,36 +112,69 @@ class LlamaCppMultimodalClient:
 
         return url.rstrip("/")
 
+    def _read_limited_json_response(
+        self,
+        response: httpx.Response,
+        max_bytes: int = 2 * 1024 * 1024,
+    ) -> dict[str, Any]:
+        """Streams and validates response size and JSON format."""
+        content_type = response.headers.get("content-type", "")
+        if "application/json" not in content_type:
+            raise LlamaCppResponseInvalidError("Response content-type is not application/json")
+
+        body_chunks: list[bytes] = []
+        total_bytes = 0
+        for chunk in response.iter_bytes():
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                raise LlamaCppResponseInvalidError("Response exceeded maximum permitted size")
+            body_chunks.append(chunk)
+
+        body_bytes = b"".join(body_chunks)
+        try:
+            parsed = json.loads(body_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as err:
+            raise LlamaCppResponseInvalidError("Response is not valid JSON") from err
+
+        if not isinstance(parsed, dict):
+            raise LlamaCppResponseInvalidError("Response root is not a JSON object")
+
+        return parsed
+
     def check_health_and_capability(self) -> dict[str, Any]:
         """Checks /v1/models to verify server readiness and multimodal capability."""
         models_url = f"{self.base_url}/models"
         try:
-            with httpx.Client(
-                trust_env=False,
-                follow_redirects=False,
-                timeout=httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0),
-            ) as client:
-                res = client.get(models_url, headers={"Accept": "application/json"})
+            with (
+                httpx.Client(
+                    trust_env=False,
+                    follow_redirects=False,
+                    timeout=httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=3.0),
+                ) as client,
+                client.stream("GET", models_url, headers={"Accept": "application/json"}) as res,
+            ):
                 if res.status_code != 200:
                     raise LlamaCppUnavailableError(
                         f"Llama.cpp server returned unexpected status: {res.status_code}"
                     )
-                payload = res.json()
+                payload = self._read_limited_json_response(res, max_bytes=1024 * 1024)
+        except LlamaCppResponseInvalidError:
+            raise
         except httpx.RequestError as err:
-            logger.warning("Llama.cpp server unreachable at %s: %s", models_url, err)
+            logger.warning("Llama.cpp server unreachable at %s", models_url)
             raise LlamaCppUnavailableError("Llama.cpp multimodal server is unavailable.") from err
         except Exception as err:
-            logger.warning("Failed to check llama.cpp models: %s", err)
+            logger.warning("Failed to check llama.cpp models")
             raise LlamaCppUnavailableError("Llama.cpp multimodal server check failed.") from err
 
         models_data = payload.get("data", [])
         if not isinstance(models_data, list):
-            raise LlamaCppIncapableError("Llama.cpp server returned invalid models format")
+            raise LlamaCppResponseInvalidError("Llama.cpp server returned invalid models format")
 
+        # Match configured model alias exactly
         target_model = None
         for m in models_data:
-            m_id = str(m.get("id", ""))
-            if m_id.lower() == self.model_id.lower() or self.model_id.lower() in m_id.lower():
+            if isinstance(m, dict) and m.get("id") == self.model_id:
                 target_model = m
                 break
 
@@ -120,41 +183,45 @@ class LlamaCppMultimodalClient:
                 f"Configured model '{self.model_id}' not found on llama.cpp server."
             )
 
-        # Verify multimodal / vision capability
+        # Verify vision capability strictly from authoritative response metadata
         has_vision = self._check_vision_capability(target_model)
         if not has_vision:
             raise LlamaCppIncapableError(
-                f"Model '{self.model_id}' does not have multimodal/vision projection loaded."
+                f"Model '{self.model_id}' lacks authoritative vision modalities."
             )
 
         return target_model
 
     def _check_vision_capability(self, model_info: dict[str, Any]) -> bool:
-        """Determines if the loaded model supports vision inputs."""
-        meta = model_info.get("meta", {})
-        if isinstance(meta, dict):
-            modalities = meta.get("modalities", [])
-            if isinstance(modalities, list) and any(
-                str(mod).lower() in {"image", "vision"} for mod in modalities
-            ):
-                return True
-            if meta.get("has_vision") is True or meta.get("multimodal") is True:
-                return True
+        """Determines if the loaded model supports vision inputs.
 
-        # Check model name or tags
-        m_id = str(model_info.get("id", "")).lower()
-        return any(
-            vl_indicator in m_id for vl_indicator in ["-vl", "_vl", "vl-", "qwen3vl", "vision"]
-        )
+        Accepts vision capability ONLY from authoritative response metadata:
+        architecture.input_modalities must contain both 'text' and 'image'.
+        No model-name, 'VL', or substring fallbacks.
+        """
+        arch = model_info.get("architecture")
+        if not isinstance(arch, dict):
+            return False
+
+        input_modalities = arch.get("input_modalities")
+        if not isinstance(input_modalities, list):
+            return False
+
+        mod_set = {str(m).strip().lower() for m in input_modalities}
+        return "text" in mod_set and "image" in mod_set
 
     def generate_grounded_answer(
-        *,
         self,
+        *,
         query: str,
         evidence_chunks: list[dict[str, Any]],
         masked_images_data_urls: list[str],
     ) -> dict[str, Any]:
         """Generates a grounded answer from retrieved chunks and masked images.
+
+        Performs exactly one capability check per generation attempt.
+        Streams and hard-limits the chat completion response.
+        Enforces strict GroundedModelOutput Pydantic schema validation with zero fallbacks.
 
         Returns structured dict:
             {
@@ -166,7 +233,7 @@ class LlamaCppMultimodalClient:
                 "total_tokens": int,
             }
         """
-        # 1. Verify health and capability
+        # 1. Verify health and capability (single check per generation attempt)
         self.check_health_and_capability()
 
         # 2. Build untrusted context prompt
@@ -190,13 +257,13 @@ class LlamaCppMultimodalClient:
 
         user_content: list[dict[str, Any]] = []
 
-        # Add evidence chunks text
-        evidence_lines = ["--- RETRIEVED AUTHORITATIVE EVIDENCE ---"]
-        for idx, chunk in enumerate(evidence_chunks, start=1):
-            cid = chunk.get("chunk_id", f"chunk_{idx}")
-            page_num = chunk.get("page_number", 1)
-            doc_name = chunk.get("document_filename", "document.pdf")
-            snippet = chunk.get("masked_snippet", "")
+        # Format retrieved evidence chunks into bounded untrusted context
+        evidence_lines = ["--- VERIFIED RETRIEVED EVIDENCE (UNTRUSTED USER DATA) ---"]
+        for c in evidence_chunks:
+            cid = str(c.get("chunk_id", ""))
+            doc_name = str(c.get("document_filename", ""))
+            page_num = c.get("page_number", 1)
+            snippet = str(c.get("masked_snippet", ""))[:1500]
             evidence_lines.append(
                 f"[Chunk ID: {cid}] (Source: {doc_name}, Page: {page_num})\n{snippet}\n"
             )
@@ -222,35 +289,42 @@ class LlamaCppMultimodalClient:
         }
 
         try:
-            with httpx.Client(
-                trust_env=False,
-                follow_redirects=False,
-                timeout=httpx.Timeout(
-                    connect=5.0,
-                    read=self.timeout_seconds,
-                    write=10.0,
-                    pool=5.0,
-                ),
-            ) as client:
-                res = client.post(
+            with (
+                httpx.Client(
+                    trust_env=False,
+                    follow_redirects=False,
+                    timeout=httpx.Timeout(
+                        connect=5.0,
+                        read=self.timeout_seconds,
+                        write=10.0,
+                        pool=5.0,
+                    ),
+                ) as client,
+                client.stream(
+                    "POST",
                     chat_url,
                     json=payload,
                     headers={"Content-Type": "application/json", "Accept": "application/json"},
-                )
+                ) as res,
+            ):
                 if res.status_code != 200:
-                    logger.warning("Llama.cpp chat returned HTTP %d: %s", res.status_code, res.text)
+                    logger.warning("Llama.cpp chat returned HTTP %d", res.status_code)
                     raise LlamaCppUnavailableError(
                         f"Llama.cpp chat completion failed with status {res.status_code}"
                     )
-                response_json = res.json()
+                response_json = self._read_limited_json_response(res, max_bytes=2 * 1024 * 1024)
+        except (LlamaCppResponseInvalidError, LlamaCppUnavailableError):
+            raise
         except httpx.RequestError as err:
-            logger.warning("Llama.cpp chat completion request failed: %s", err)
+            logger.warning("Llama.cpp chat completion request failed")
             raise LlamaCppUnavailableError(
                 "Llama.cpp service timed out or was unreachable."
             ) from err
         except Exception as err:
-            logger.warning("Llama.cpp completion parse error: %s", err)
-            raise LlamaCppUnavailableError("Llama.cpp response could not be processed.") from err
+            logger.warning("Llama.cpp completion parse error")
+            raise LlamaCppResponseInvalidError(
+                "Llama.cpp response could not be processed."
+            ) from err
 
         usage = response_json.get("usage", {})
         prompt_tokens = int(usage.get("prompt_tokens", 0))
@@ -258,46 +332,29 @@ class LlamaCppMultimodalClient:
         total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens))
 
         choices = response_json.get("choices", [])
-        if not choices:
-            raise LlamaCppUnavailableError("Llama.cpp returned empty choices")
+        if not choices or not isinstance(choices, list):
+            raise LlamaCppResponseInvalidError("Llama.cpp returned empty or invalid choices")
 
         content_str = choices[0].get("message", {}).get("content", "")
-        parsed = self._extract_json_response(content_str)
+        if not isinstance(content_str, str) or not content_str.strip():
+            raise LlamaCppResponseInvalidError("Model returned empty message content")
+
+        # Strict Pydantic parsing: extra fields forbidden,
+        # types strictly enforced, no raw text fallback
+        try:
+            raw_parsed = json.loads(content_str)
+            if not isinstance(raw_parsed, dict):
+                raise ValueError("Model content is not a JSON object")
+            model_output = GroundedModelOutput.model_validate(raw_parsed)
+        except Exception as err:
+            logger.warning("Model output violates strict GroundedModelOutput schema")
+            raise LlamaCppResponseInvalidError("Model generated invalid output structure") from err
 
         return {
-            "answer": str(parsed.get("answer", "")).strip(),
-            "cited_chunk_ids": [
-                str(cid) for cid in parsed.get("cited_chunk_ids", []) if isinstance(cid, (str, int))
-            ],
-            "insufficient_evidence": bool(parsed.get("insufficient_evidence", False)),
+            "answer": model_output.answer.strip(),
+            "cited_chunk_ids": model_output.cited_chunk_ids,
+            "insufficient_evidence": model_output.insufficient_evidence,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
         }
-
-    def _extract_json_response(self, raw_content: str) -> dict[str, Any]:
-        """Extracts and parses JSON object from model output."""
-        try:
-            return json.loads(raw_content)
-        except json.JSONDecodeError:
-            # Fallback to markdown block extraction
-            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_content, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group(1))
-                except json.JSONDecodeError:
-                    pass
-            # Fallback to finding outermost curly braces
-            start = raw_content.find("{")
-            end = raw_content.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                try:
-                    return json.loads(raw_content[start : end + 1])
-                except json.JSONDecodeError:
-                    pass
-
-            return {
-                "answer": raw_content.strip(),
-                "cited_chunk_ids": [],
-                "insufficient_evidence": True,
-            }

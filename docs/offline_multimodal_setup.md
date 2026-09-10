@@ -1,6 +1,6 @@
 # Offline Multimodal Setup: Qwen3-VL-4B with llama.cpp
 
-This guide details the manual, air-gapped setup for local multimodal retrieval-augmented generation (RAG) in KoshShield AI using Qwen3-VL-4B and `llama.cpp`.
+This guide details the manual, air-gapped setup for local multimodal retrieval-augmented generation (RAG) in KoshShield AI using Qwen3-VL-4B and `llama.cpp` (pinned supported version: **`llama.cpp build b4600`**).
 
 In compliance with KoshShield AI's local-first security policy (`AGENTS.md`):
 - **Never** download model weights or projector files at application runtime.
@@ -22,29 +22,29 @@ Store these files in a dedicated local directory outside the repository (for exa
 
 ---
 
-## 2. Integrity Verification (SHA-256 Checksums)
+## 2. Integrity Verification (Operator Signed Manifest)
 
-Verify the integrity of downloaded artifacts against locally recorded checksums before loading:
+Integrity verification requires a trusted, operator-supplied signed SHA-256 manifest. Checksums must never be invented or assumed.
+
+Operators must verify the SHA-256 digests of downloaded model artifacts against their organization's cryptographically signed manifest prior to starting the inference server:
 
 ```bash
-# Generate SHA-256 checksums
+# Generate SHA-256 checksums of local artifact files
 shasum -a 256 Qwen3VL-4B-Instruct-Q4_K_M.gguf
 shasum -a 256 mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
+
+# Verify against the operator's signed release manifest
+gpg --verify SHA256SUMS.sig SHA256SUMS
+shasum -a 256 -c SHA256SUMS
 ```
 
-Expected locally recorded checksum baseline:
-- `Qwen3VL-4B-Instruct-Q4_K_M.gguf`:
-  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` *(example recorded baseline)*
-- `mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf`:
-  `d41d8cd98f00b204e9800998ecf8427e04a9d700325d77ae224b7447477174e3` *(example recorded baseline)*
-
-Verify that the output matches your organization's recorded signed digest before launching `llama-server`.
+Do not proceed if any digest fails validation against the authoritative signed manifest.
 
 ---
 
 ## 3. Starting the Local `llama-server`
 
-KoshShield AI requires `llama-server` from `llama.cpp` running locally on loopback (`127.0.0.1` or `localhost`) or an explicit container service name (`llama-server`).
+KoshShield AI requires `llama-server` from **`llama.cpp build b4600`** running locally on loopback (`127.0.0.1` or `localhost`) or an explicit container service name (`llama-server`).
 
 ### Command Line Invocation
 
@@ -61,9 +61,10 @@ llama-server \
 ```
 
 ### Critical Server Parameters
+- Supported build: `llama.cpp build b4600`
 - `--host 127.0.0.1`: Bind strictly to loopback to prevent external network access.
-- `--alias Qwen3VL-4B-Instruct`: Match the model ID configured in `KOSHSHIELD_LLAMA_CPP_MODEL_ID`.
-- `--mmproj`: Enables vision embedding capabilities; if omitted, KoshShield will detect absence of vision and return HTTP 503.
+- `--alias Qwen3VL-4B-Instruct`: Match the model ID configured in `KOSHSHIELD_LLAMA_CPP_MODEL_ID` exactly.
+- `--mmproj`: Enables vision embedding capabilities; the server must report `architecture.input_modalities` containing both `text` and `image` via `/v1/models`.
 - `--temperature 0.0`: Deterministic responses for grounded evidence verification.
 
 ---
@@ -77,14 +78,14 @@ Enable multimodal answering in `apps/api/.env` or process environment:
 KOSHSHIELD_ENABLE_MULTIMODAL_ANSWERING=true
 
 # Strict local loopback URL (SSRF protection rejects remote hosts, single labels, and redirects)
-KOSHSHIELD_LLAMA_CPP_URL=http://127.0.0.1:8080
+KOSHSHIELD_LLAMA_BASE_URL=http://127.0.0.1:8080/v1
 
-# Configured model identifier checked against /v1/models
+# Configured model identifier checked against /v1/models (must match exactly)
 KOSHSHIELD_LLAMA_CPP_MODEL_ID=Qwen3VL-4B-Instruct
 
 # Resource bounds
-KOSHSHIELD_LLAMA_CPP_TIMEOUT_SECONDS=60.0
-KOSHSHIELD_LLAMA_CPP_MAX_TOKENS=1024
+KOSHSHIELD_LLAMA_CPP_TIMEOUT_SECONDS=30.0
+KOSHSHIELD_LLAMA_CPP_MAX_TOKENS=512
 ```
 
 ---
