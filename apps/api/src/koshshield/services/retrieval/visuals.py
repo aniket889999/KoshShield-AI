@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 
-from koshshield.security.pii.indian_pii import IndianPiiDetector
+from koshshield.security.pii.indian_pii import REDACTION_PLACEHOLDERS, IndianPiiDetector
 
 UUID_NAMESPACE_KOSHSHIELD_VISUAL = uuid.UUID("a91b4e20-7f61-4e4c-8c01-7bf9b9355f32")
 
@@ -101,8 +101,9 @@ def build_visual_region_drafts(
 
             r_findings = detector.detect(r_caption)
             if r_findings:
-                for f in r_findings:
-                    r_caption = r_caption.replace(f.raw_value, "[REDACTED]")
+                for f in sorted(r_findings, key=lambda x: x.start, reverse=True):
+                    ph = REDACTION_PLACEHOLDERS.get(f.finding_type, "[REDACTED]")
+                    r_caption = r_caption[: f.start] + ph + r_caption[f.end :]
                 if detector.detect(r_caption):
                     r_caption = f"Region {seq} on page {page_number} (privacy-cleared)."
 

@@ -24,6 +24,7 @@ from koshshield.models import (
 )
 from koshshield.security.vault import EncryptedVault
 from koshshield.services.extraction.interfaces import ExtractedPage
+from koshshield.services.extraction.paddle_ocr import PaddleOcrAdapter
 from koshshield.services.redaction import approve_redactions
 from koshshield.services.retrieval.embeddings.deterministic_fake import (
     DeterministicEmbeddingProvider,
@@ -111,12 +112,22 @@ def test_generate_masked_page_image_derivative_success() -> None:
         status=FindingStatus.ACCEPTED,
     )
 
+    mock_ocr = MagicMock(spec=PaddleOcrAdapter)
+    mock_ocr.is_available.return_value = (True, "Ready")
+    mock_ocr.extract_image.return_value = ExtractedPage(
+        page_number=1,
+        width=200.0,
+        height=200.0,
+        text="Applicant details verified with zero sensitive data.",
+    )
+
     enc_path, masked_sha256, media_type, status = generate_masked_page_image_derivative(
         vault=vault,
         document_id=doc_id,
         page=page,
         accepted_findings=[finding],
         target_version=2,
+        ocr_adapter=mock_ocr,
     )
 
     assert status == "APPROVED"
@@ -234,10 +245,10 @@ def test_fail_closed_residual_pii_detected_by_ocr() -> None:
         status=FindingStatus.ACCEPTED,
     )
 
-    # Mock OCR adapter that discovers residual Aadhaar
-    mock_ocr = MagicMock()
+    # Mock OCR adapter with actual PaddleOcrAdapter spec that discovers residual PAN
+    mock_ocr = MagicMock(spec=PaddleOcrAdapter)
     mock_ocr.is_available.return_value = (True, "Ready")
-    mock_ocr.extract_page_from_image.return_value = ExtractedPage(
+    mock_ocr.extract_image.return_value = ExtractedPage(
         page_number=1,
         width=200.0,
         height=200.0,
@@ -353,12 +364,22 @@ def test_approve_redactions_generates_derivatives_and_updates_regions() -> None:
         session.add_all([doc, page, finding])
         session.commit()
 
+        mock_ocr = MagicMock(spec=PaddleOcrAdapter)
+        mock_ocr.is_available.return_value = (True, "Ready")
+        mock_ocr.extract_image.return_value = ExtractedPage(
+            page_number=1,
+            width=200.0,
+            height=200.0,
+            text="Clean approved page text.",
+        )
+
         updated_doc = approve_redactions(
             session=session,
             document_id=doc_id,
             actor_id="approver-1",
             vault=vault,
             tenant_id="tenant-alpha",
+            ocr_adapter=mock_ocr,
         )
 
         assert updated_doc.status == DocumentState.INDEX_READY
@@ -524,3 +545,319 @@ def test_hardened_evidence_endpoint_blocks_cross_tenant_and_stale(
         headers={"X-Tenant-ID": "tenant-secure"},
     )
     assert res_stale.status_code == 404
+
+
+def test_paddle_ocr_spec_rejects_nonexistent_method() -> None:
+    """Proves that spec=PaddleOcrAdapter rejects nonexistent OCR methods."""
+    mock_ocr = MagicMock(spec=PaddleOcrAdapter)
+    # The real method extract_image exists on PaddleOcrAdapter
+    assert hasattr(mock_ocr, "extract_image")
+    # Nonexistent method extract_page_from_image must raise AttributeError
+    with pytest.raises(AttributeError):
+        _ = mock_ocr.extract_page_from_image
+
+
+def test_ocr_absent_or_unavailable_blocks_visual_derivative() -> None:
+    """Proves missing or unavailable OCR yields BLOCKED_OCR_UNAVAILABLE without storing image."""
+    vault = EncryptedVault(
+        Path(os.environ["KOSHSHIELD_VAULT_DIR"]),
+        os.environ["KOSHSHIELD_MASTER_KEY_BASE64"],
+    )
+    doc_id = str(uuid.uuid4())
+    orig_bytes = _create_synthetic_png_bytes((200, 200, 200))
+    orig_hash = hashlib.sha256(orig_bytes).hexdigest()
+    orig_path = vault.encrypt(
+        document_id=f"{doc_id}_p1_image",
+        evidence_hash=orig_hash,
+        plaintext=orig_bytes,
+    )
+
+    page = DocumentPageRecord(
+        id=str(uuid.uuid4()),
+        document_id=doc_id,
+        page_number=1,
+        width=200,
+        height=200,
+        encrypted_page_image_path=str(orig_path),
+        page_image_sha256=orig_hash,
+        page_image_media_type="image/png",
+    )
+
+    # 1. OCR adapter is None
+    enc_path, masked_hash, media_type, status = generate_masked_page_image_derivative(
+        vault=vault,
+        document_id=doc_id,
+        page=page,
+        accepted_findings=[],
+        target_version=2,
+        ocr_adapter=None,
+    )
+    assert status == "BLOCKED_OCR_UNAVAILABLE"
+    assert enc_path is None
+    assert masked_hash is None
+
+    # 2. OCR is_available returns False
+    mock_ocr = MagicMock(spec=PaddleOcrAdapter)
+    mock_ocr.is_available.return_value = (False, "models missing")
+    enc_path, masked_hash, media_type, status = generate_masked_page_image_derivative(
+        vault=vault,
+        document_id=doc_id,
+        page=page,
+        accepted_findings=[],
+        target_version=2,
+        ocr_adapter=mock_ocr,
+    )
+    assert status == "BLOCKED_OCR_UNAVAILABLE"
+    assert enc_path is None
+    assert masked_hash is None
+
+
+def test_ocr_error_sets_blocked_ocr_verification_failed() -> None:
+    """Proves that an OCR exception yields BLOCKED_OCR_VERIFICATION_FAILED."""
+    vault = EncryptedVault(
+        Path(os.environ["KOSHSHIELD_VAULT_DIR"]),
+        os.environ["KOSHSHIELD_MASTER_KEY_BASE64"],
+    )
+    doc_id = str(uuid.uuid4())
+    orig_bytes = _create_synthetic_png_bytes((200, 200, 200))
+    orig_hash = hashlib.sha256(orig_bytes).hexdigest()
+    orig_path = vault.encrypt(
+        document_id=f"{doc_id}_p1_image",
+        evidence_hash=orig_hash,
+        plaintext=orig_bytes,
+    )
+
+    page = DocumentPageRecord(
+        id=str(uuid.uuid4()),
+        document_id=doc_id,
+        page_number=1,
+        width=200,
+        height=200,
+        encrypted_page_image_path=str(orig_path),
+        page_image_sha256=orig_hash,
+        page_image_media_type="image/png",
+    )
+
+    mock_ocr = MagicMock(spec=PaddleOcrAdapter)
+    mock_ocr.is_available.return_value = (True, "Ready")
+    mock_ocr.extract_image.side_effect = RuntimeError("OCR engine crashed")
+
+    enc_path, masked_hash, media_type, status = generate_masked_page_image_derivative(
+        vault=vault,
+        document_id=doc_id,
+        page=page,
+        accepted_findings=[],
+        target_version=2,
+        ocr_adapter=mock_ocr,
+    )
+    assert status == "BLOCKED_OCR_VERIFICATION_FAILED"
+    assert enc_path is None
+    assert masked_hash is None
+
+
+def test_distinct_blocked_states() -> None:
+    """Proves distinct blocked states for decryption, decode, dimension limits, and missing."""
+    vault = EncryptedVault(
+        Path(os.environ["KOSHSHIELD_VAULT_DIR"]),
+        os.environ["KOSHSHIELD_MASTER_KEY_BASE64"],
+    )
+    doc_id = str(uuid.uuid4())
+
+    # 1. NOT_APPLICABLE: No source image path or hash
+    page_no_img = DocumentPageRecord(
+        id=str(uuid.uuid4()),
+        document_id=doc_id,
+        page_number=1,
+        width=200,
+        height=200,
+        encrypted_page_image_path=None,
+        page_image_sha256=None,
+    )
+    _, _, _, status = generate_masked_page_image_derivative(
+        vault=vault,
+        document_id=doc_id,
+        page=page_no_img,
+        accepted_findings=[],
+        target_version=2,
+    )
+    assert status == "NOT_APPLICABLE"
+
+    # 2. BLOCKED_DECRYPTION_FAILED: Decryption throws
+    page_bad_decrypt = DocumentPageRecord(
+        id=str(uuid.uuid4()),
+        document_id=doc_id,
+        page_number=1,
+        width=200,
+        height=200,
+        encrypted_page_image_path="nonexistent/vault/path.ksh",
+        page_image_sha256="a" * 64,
+    )
+    _, _, _, status = generate_masked_page_image_derivative(
+        vault=vault,
+        document_id=doc_id,
+        page=page_bad_decrypt,
+        accepted_findings=[],
+        target_version=2,
+    )
+    assert status == "BLOCKED_DECRYPTION_FAILED"
+
+    # 3. BLOCKED_DECODE_FAILED: Decrypted bytes not a valid image
+    corrupt_bytes = b"not-a-valid-image-bytes"
+    corrupt_hash = hashlib.sha256(corrupt_bytes).hexdigest()
+    corrupt_path = vault.encrypt(
+        document_id=f"{doc_id}_p1_image",
+        evidence_hash=corrupt_hash,
+        plaintext=corrupt_bytes,
+    )
+    page_bad_decode = DocumentPageRecord(
+        id=str(uuid.uuid4()),
+        document_id=doc_id,
+        page_number=1,
+        width=200,
+        height=200,
+        encrypted_page_image_path=str(corrupt_path),
+        page_image_sha256=corrupt_hash,
+    )
+    _, _, _, status = generate_masked_page_image_derivative(
+        vault=vault,
+        document_id=doc_id,
+        page=page_bad_decode,
+        accepted_findings=[],
+        target_version=2,
+    )
+    assert status == "BLOCKED_DECODE_FAILED"
+
+    # 4. BLOCKED_DIMENSION_LIMIT_EXCEEDED: Raster dimensions exceed max_image_dimension
+    orig_bytes = _create_synthetic_png_bytes((255, 255, 255))
+    orig_hash = hashlib.sha256(orig_bytes).hexdigest()
+    orig_path = vault.encrypt(
+        document_id=f"{doc_id}_p1_image",
+        evidence_hash=orig_hash,
+        plaintext=orig_bytes,
+    )
+    page_big = DocumentPageRecord(
+        id=str(uuid.uuid4()),
+        document_id=doc_id,
+        page_number=1,
+        width=200,
+        height=200,
+        encrypted_page_image_path=str(orig_path),
+        page_image_sha256=orig_hash,
+    )
+    _, _, _, status = generate_masked_page_image_derivative(
+        vault=vault,
+        document_id=doc_id,
+        page=page_big,
+        accepted_findings=[],
+        target_version=2,
+        max_image_dimension=100,  # Smaller than image size (200x200)
+    )
+    assert status == "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
+
+
+def test_authoritative_image_available_and_no_original_hash_in_payloads() -> None:
+    """Proves that image_available requires an authoritative approved active-version derivative,
+    and original image hash never enters indexing payloads."""
+    from koshshield.services.retrieval.indexing_service import DocumentIndexingService
+
+    doc_id = str(uuid.uuid4())
+    orig_hash = "1" * 64
+    masked_hash = "2" * 64
+
+    with Session(bind=engine) as session:
+        doc = DocumentRecord(
+            id=doc_id,
+            tenant_id="tenant-test",
+            filename="test.pdf",
+            media_type="application/pdf",
+            size_bytes=100,
+            sha256="s" * 64,
+            vault_path="vault/path",
+            status=DocumentState.REDACTION_APPROVED,
+            version=1,
+        )
+        # Page 1 is BLOCKED_OCR_UNAVAILABLE
+        p1 = DocumentPageRecord(
+            id=str(uuid.uuid4()),
+            document_id=doc_id,
+            page_number=1,
+            width=200,
+            height=200,
+            extraction_method="native_pdf",
+            text_hash="thash",
+            encrypted_artifact_path="vault/raw",
+            page_image_sha256=orig_hash,
+            visual_privacy_status="BLOCKED_OCR_UNAVAILABLE",
+            visual_redaction_version=1,
+            masked_page_image_sha256=None,
+        )
+        # Page 2 is APPROVED
+        p2 = DocumentPageRecord(
+            id=str(uuid.uuid4()),
+            document_id=doc_id,
+            page_number=2,
+            width=200,
+            height=200,
+            extraction_method="native_pdf",
+            text_hash="thash2",
+            encrypted_artifact_path="vault/raw2",
+            encrypted_masked_page_image_path="vault/masked_p2",
+            page_image_sha256=orig_hash,
+            masked_page_image_sha256=masked_hash,
+            masked_page_image_media_type="image/png",
+            visual_privacy_status="APPROVED",
+            visual_redaction_version=1,
+        )
+        # Region on Page 1
+        r1 = DocumentVisualRegionRecord(
+            id=str(uuid.uuid4()),
+            tenant_id="tenant-test",
+            document_id=doc_id,
+            page_number=1,
+            region_sequence=0,
+            region_type="PAGE_IMAGE",
+            source="page_raster",
+            caption_text="Page 1",
+            caption_hash="h1",
+            redaction_version=1,
+            image_sha256=orig_hash,
+            masked_image_sha256=None,
+        )
+        # Region on Page 2
+        r2 = DocumentVisualRegionRecord(
+            id=str(uuid.uuid4()),
+            tenant_id="tenant-test",
+            document_id=doc_id,
+            page_number=2,
+            region_sequence=0,
+            region_type="PAGE_IMAGE",
+            source="page_raster",
+            caption_text="Page 2",
+            caption_hash="h2",
+            redaction_version=1,
+            image_sha256=orig_hash,
+            masked_image_sha256=masked_hash,
+        )
+        session.add_all([doc, p1, p2, r1, r2])
+        session.commit()
+
+        regions_by_page = DocumentIndexingService._load_visual_regions_by_page(
+            session=session,
+            document_id=doc_id,
+            tenant_id="tenant-test",
+            redaction_version=1,
+        )
+
+        # Page 1 region must have image_available=False, image_sha256=None
+        p1_regs = regions_by_page.get(1, [])
+        assert len(p1_regs) == 1
+        assert p1_regs[0]["image_available"] is False
+        assert p1_regs[0]["image_sha256"] is None
+        assert p1_regs[0]["image_sha256"] != orig_hash
+
+        # Page 2 region must have image_available=True, image_sha256=masked_hash
+        p2_regs = regions_by_page.get(2, [])
+        assert len(p2_regs) == 1
+        assert p2_regs[0]["image_available"] is True
+        assert p2_regs[0]["image_sha256"] == masked_hash
+        assert p2_regs[0]["image_sha256"] != orig_hash

@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import MagicMock, patch
 
 import pymupdf
 import pytest
@@ -11,6 +12,8 @@ from koshshield.database import SessionLocal
 from koshshield.main import app
 from koshshield.models import DocumentRecord, DocumentState
 from koshshield.services.agent.tool_runner import ToolRunnerResult
+from koshshield.services.extraction.interfaces import ExtractedPage
+from koshshield.services.extraction.paddle_ocr import PaddleOcrAdapter
 from koshshield.services.retrieval.embeddings.deterministic_fake import (
     DeterministicEmbeddingProvider,
 )
@@ -280,10 +283,20 @@ def test_retrieval_and_visual_evidence_cross_tenant_isolation(isolated_env) -> N
         f"/api/v1/documents/{doc_a_id}/redactions/accept-high-confidence",
         headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "user-a"},
     )
-    client.post(
-        f"/api/v1/documents/{doc_a_id}/redactions/approve",
-        headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "user-a"},
-    )
+    with patch("koshshield.api.routes.review.PaddleOcrAdapter") as mock_ocr_cls:
+        mock_ocr = MagicMock(spec=PaddleOcrAdapter)
+        mock_ocr.is_available.return_value = (True, "Ready")
+        mock_ocr.extract_image.return_value = ExtractedPage(
+            page_number=1,
+            width=200.0,
+            height=200.0,
+            text="Nuclear power grid telemetry encrypted",
+        )
+        mock_ocr_cls.return_value = mock_ocr
+        client.post(
+            f"/api/v1/documents/{doc_a_id}/redactions/approve",
+            headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "user-a"},
+        )
     client.post(
         f"/api/v1/documents/{doc_a_id}/index",
         headers={"X-Tenant-ID": "tenant-a", "X-Actor-ID": "user-a"},

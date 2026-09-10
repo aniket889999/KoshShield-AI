@@ -165,6 +165,17 @@ class DocumentVisualRegionRecord(Base):
     redaction_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "document_id",
+            "page_number",
+            "region_sequence",
+            "redaction_version",
+            name="uq_document_visual_regions_provenance",
+        ),
+    )
+
 
 class RedactionFinding(Base):
     __tablename__ = "redaction_findings"

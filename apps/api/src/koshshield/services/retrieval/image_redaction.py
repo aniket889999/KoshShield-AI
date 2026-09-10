@@ -61,6 +61,7 @@ def generate_masked_page_image_derivative(
     target_version: int,
     ocr_adapter: PaddleOcrAdapter | None = None,
     padding_points: float = 2.0,
+    max_image_dimension: int = 4096,
 ) -> tuple[Path | None, str | None, str | None, str]:
     """Generates an opaque, privacy-safe masked page image derivative.
 
@@ -68,10 +69,15 @@ def generate_masked_page_image_derivative(
         (encrypted_path, masked_sha256, media_type, visual_privacy_status)
 
     visual_privacy_status values:
-        - "APPROVED": Successfully generated, verified, and encrypted in vault.
+        - "APPROVED": Successfully generated, verified with OCR, and encrypted in vault.
         - "BLOCKED_UNLOCATED_PII": Accepted PII had missing, invalid, or unlocated bounding box.
         - "BLOCKED_RESIDUAL_PII": OCR verification detected sensitive PII on the derivative.
-        - "NOT_APPLICABLE": Page has no original image.
+        - "BLOCKED_OCR_UNAVAILABLE": OCR engine or model files not configured/available.
+        - "BLOCKED_OCR_VERIFICATION_FAILED": OCR verification threw an error or gave invalid output.
+        - "BLOCKED_DECRYPTION_FAILED": Original page image failed vault decryption.
+        - "BLOCKED_DECODE_FAILED": Original page image failed Pillow decoding.
+        - "BLOCKED_DIMENSION_LIMIT_EXCEEDED": Image dimensions exceed maximum permitted limit.
+        - "NOT_APPLICABLE": Page has no source page image.
     """
     if not page.encrypted_page_image_path or not page.page_image_sha256:
         return None, None, None, "NOT_APPLICABLE"
@@ -134,7 +140,7 @@ def generate_masked_page_image_derivative(
         )
     except Exception as err:
         logger.error("Failed to decrypt original page image for doc '%s': %s", document_id, err)
-        return None, None, None, "NOT_APPLICABLE"
+        return None, None, None, "BLOCKED_DECRYPTION_FAILED"
 
     # Decode with Pillow, apply EXIF orientation, strip metadata, and normalize to RGB
     try:
@@ -143,9 +149,18 @@ def generate_masked_page_image_derivative(
             img = img.convert("RGB")
     except Exception as err:
         logger.error("Failed to decode page image with Pillow: %s", err)
-        return None, None, None, "NOT_APPLICABLE"
+        return None, None, None, "BLOCKED_DECODE_FAILED"
 
     raster_width, raster_height = img.width, img.height
+    if raster_width > max_image_dimension or raster_height > max_image_dimension:
+        logger.warning(
+            "Page image dimensions (%dx%d) exceed maximum %d",
+            raster_width,
+            raster_height,
+            max_image_dimension,
+        )
+        return None, None, None, "BLOCKED_DIMENSION_LIMIT_EXCEEDED"
+
     scale_x = (raster_width / page_width) if page_width > 0 else 1.0
     scale_y = (raster_height / page_height) if page_height > 0 else 1.0
 
@@ -175,25 +190,39 @@ def generate_masked_page_image_derivative(
     img.save(buf, format="PNG", optimize=True)
     masked_png_bytes = buf.getvalue()
 
-    # Optional local OCR verification
-    if ocr_adapter is not None:
-        try:
-            available, _ = ocr_adapter.is_available()
-            if available:
-                extracted = ocr_adapter.extract_page_from_image(
-                    image_bytes=masked_png_bytes,
-                    page_number=page.page_number,
-                )
-                detector = IndianPiiDetector()
-                residual_findings = detector.detect(extracted.text)
-                if residual_findings:
-                    logger.warning(
-                        "Residual PII detected on page %d visual derivative; blocking derivative.",
-                        page.page_number,
-                    )
-                    return None, None, None, "BLOCKED_RESIDUAL_PII"
-        except Exception as ocr_err:
-            logger.warning("Local OCR verification encountered error: %s", ocr_err)
+    # Mandatory local OCR verification: APPROVED must mean OCR verification actually executed
+    # and confirmed zero residual PII
+    if ocr_adapter is None:
+        logger.warning("OCR adapter not provided; visual privacy cannot be verified.")
+        return None, None, None, "BLOCKED_OCR_UNAVAILABLE"
+
+    try:
+        available, reason = ocr_adapter.is_available()
+        if not available:
+            logger.warning("Local OCR is unavailable: %s; blocking derivative.", reason)
+            return None, None, None, "BLOCKED_OCR_UNAVAILABLE"
+
+        extracted = ocr_adapter.extract_image(
+            image_bytes=masked_png_bytes,
+            page_number=page.page_number,
+        )
+        if extracted is None or not hasattr(extracted, "text"):
+            logger.warning(
+                "Local OCR returned invalid extracted output for page %d", page.page_number
+            )
+            return None, None, None, "BLOCKED_OCR_VERIFICATION_FAILED"
+    except Exception as ocr_err:
+        logger.warning("Local OCR verification failed for page %d: %s", page.page_number, ocr_err)
+        return None, None, None, "BLOCKED_OCR_VERIFICATION_FAILED"
+
+    detector = IndianPiiDetector()
+    residual_findings = detector.detect(extracted.text)
+    if residual_findings:
+        logger.warning(
+            "Residual PII detected on page %d visual derivative; blocking derivative.",
+            page.page_number,
+        )
+        return None, None, None, "BLOCKED_RESIDUAL_PII"
 
     # Encrypt masked derivative into vault
     masked_artifact_id = f"{document_id}_p{page.page_number}_v{target_version}_masked_image"

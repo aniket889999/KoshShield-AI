@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from koshshield.models import (
     DocumentChunkRecord,
+    DocumentPageRecord,
     DocumentRecord,
     DocumentState,
     DocumentVisualRegionRecord,
@@ -588,14 +589,29 @@ class DocumentIndexingService:
             DocumentVisualRegionRecord.page_number.asc(),
             DocumentVisualRegionRecord.region_sequence.asc(),
         )
+        # Check which pages have an authoritative approved active-version derivative
+        page_query = select(DocumentPageRecord).where(DocumentPageRecord.document_id == document_id)
+        pages = list(session.scalars(page_query))
+        approved_pages = {
+            p.page_number
+            for p in pages
+            if p.visual_privacy_status == "APPROVED"
+            and (redaction_version is None or p.visual_redaction_version == redaction_version)
+            and bool(p.masked_page_image_sha256)
+            and bool(p.encrypted_masked_page_image_path)
+            and (p.masked_page_image_media_type or "image/png") == "image/png"
+        }
+
         records = list(session.scalars(query))
         regions_by_page: dict[int, list[dict[str, object]]] = {}
         for record in records:
             bbox_payload = record.bbox_json if isinstance(record.bbox_json, dict) else {}
             bbox = bbox_payload.get("bbox") if isinstance(bbox_payload.get("bbox"), list) else None
-            # Only masked derivative hash is allowed in retrieval payloads;
-            # never original image hash
-            masked_hash = record.masked_image_sha256 or record.image_sha256
+            # Only masked derivative hash is allowed; never original image hash fallback
+            is_approved = (record.page_number in approved_pages) and bool(
+                record.masked_image_sha256
+            )
+            masked_hash = record.masked_image_sha256 if is_approved else None
             regions_by_page.setdefault(record.page_number, []).append(
                 {
                     "region_id": record.id,
@@ -607,7 +623,7 @@ class DocumentIndexingService:
                     "caption": record.caption_text,
                     "caption_hash": record.caption_hash,
                     "image_sha256": masked_hash,
-                    "image_available": bool(masked_hash),
+                    "image_available": is_approved,
                     "source": record.source,
                 }
             )

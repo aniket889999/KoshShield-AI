@@ -491,6 +491,8 @@ def approve_redactions(
 
     target_version = document.version + 1
 
+    max_dim = getattr(ocr_adapter, "max_image_dimension", 4096)
+
     # Generate deterministic masked image derivatives for each page
     for page in pages:
         enc_path, masked_hash, media_type, visual_status = generate_masked_page_image_derivative(
@@ -500,6 +502,7 @@ def approve_redactions(
             accepted_findings=findings_by_page.get(page.page_number, []),
             target_version=target_version,
             ocr_adapter=ocr_adapter,
+            max_image_dimension=max_dim,
         )
         page.encrypted_masked_page_image_path = str(enc_path) if enc_path else None
         page.masked_page_image_sha256 = masked_hash

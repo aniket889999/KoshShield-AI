@@ -193,7 +193,7 @@ def test_empty_database_upgrade() -> None:
     try:
         db_url = f"sqlite:///{db_path}"
         head_rev = bootstrap_and_upgrade(database_url=db_url)
-        assert head_rev == "0003_visual_evidence_derivatives"
+        assert head_rev == "0004_visual_region_uniqueness"
 
         engine = create_engine(db_url)
         check_schema_at_head(engine)
@@ -323,7 +323,7 @@ def test_genuine_pre_alembic_database_upgrade_with_data_preservation() -> None:
 
         # Run safe bootstrap and upgrade
         head_rev = bootstrap_and_upgrade(database_url=db_url)
-        assert head_rev == "0003_visual_evidence_derivatives"
+        assert head_rev == "0004_visual_region_uniqueness"
 
         # Check startup validation now passes
         check_schema_at_head(engine)
@@ -793,6 +793,129 @@ def test_missing_tenant_insert_rejection() -> None:
                     resource_id=None,
                     details={},
                 )
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
+
+def test_visual_region_provenance_uniqueness_enforced() -> None:
+    """Proves that duplicate (tenant, document, page, sequence, version) fails."""
+    from koshshield.models import DocumentVisualRegionRecord
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        db_url = f"sqlite:///{db_path}"
+        bootstrap_and_upgrade(database_url=db_url)
+        engine = create_engine(db_url)
+
+        with Session(engine) as session:
+            doc_id = str(uuid4())
+            now = datetime.now(UTC)
+            doc = DocumentRecord(
+                id=doc_id,
+                tenant_id="tenant-alpha",
+                filename="test.pdf",
+                media_type="application/pdf",
+                size_bytes=100,
+                sha256="a" * 64,
+                vault_path="/v/test",
+                status="INDEXED",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(doc)
+            session.commit()
+
+            region1 = DocumentVisualRegionRecord(
+                id=str(uuid4()),
+                tenant_id="tenant-alpha",
+                document_id=doc_id,
+                page_number=1,
+                region_sequence=0,
+                region_type="PAGE_IMAGE",
+                source="page_raster",
+                caption_text="Page 1",
+                caption_hash="h" * 64,
+                redaction_version=1,
+                masked_image_sha256="m" * 64,
+            )
+            session.add(region1)
+            session.commit()
+
+            # Duplicate with same provenance tuple
+            region2 = DocumentVisualRegionRecord(
+                id=str(uuid4()),
+                tenant_id="tenant-alpha",
+                document_id=doc_id,
+                page_number=1,
+                region_sequence=0,
+                region_type="PAGE_IMAGE",
+                source="page_raster",
+                caption_text="Duplicate Page 1",
+                caption_hash="h" * 64,
+                redaction_version=1,
+                masked_image_sha256="m" * 64,
+            )
+            session.add(region2)
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
+
+def test_migration_0004_rejects_existing_duplicates() -> None:
+    """Proves migration 0004 fails clearly when duplicate visual regions exist."""
+    from pathlib import Path
+
+    import alembic.command
+    from alembic.config import Config
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        db_url = f"sqlite:///{db_path}"
+        # Upgrade up to 0003 only
+        alembic_cfg = Config()
+        migrations_dir = Path(__file__).parent.parent / "alembic"
+        alembic_cfg.set_main_option("script_location", str(migrations_dir))
+        alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+
+        alembic.command.upgrade(alembic_cfg, "0003_visual_evidence_derivatives")
+
+        engine = create_engine(db_url)
+        doc_id = str(uuid4())
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO documents (id, tenant_id, filename, media_type, "
+                    "size_bytes, sha256, vault_path, status, version, "
+                    "created_at, updated_at) "
+                    "VALUES (:id, 'tenant-1', 'doc.pdf', 'application/pdf', 10, "
+                    "'sha', 'p', 'ENCRYPTED', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"id": doc_id},
+            )
+            # Insert two identical provenance rows in 0003 schema
+            for i in range(2):
+                conn.execute(
+                    text(
+                        "INSERT INTO document_visual_regions (id, tenant_id, document_id, "
+                        "page_number, region_sequence, region_type, source, caption_text, "
+                        "caption_hash, redaction_version, created_at) "
+                        "VALUES (:id, 'tenant-1', :doc_id, 1, 0, 'PAGE_IMAGE', "
+                        "'page_raster', 'cap', 'h', 1, CURRENT_TIMESTAMP)"
+                    ),
+                    {"id": f"reg-{i}", "doc_id": doc_id},
+                )
+
+        # Now upgrading to head (which includes 0004) must fail with RuntimeError
+        with pytest.raises(RuntimeError, match="duplicate group"):
+            alembic.command.upgrade(alembic_cfg, "head")
+
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)

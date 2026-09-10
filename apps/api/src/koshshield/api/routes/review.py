@@ -31,6 +31,7 @@ from koshshield.security.context import (
 )
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.extraction.interfaces import ExtractionError, OcrUnavailableError
+from koshshield.services.extraction.paddle_ocr import PaddleOcrAdapter
 from koshshield.services.redaction import (
     ConcurrencyConflictError,
     RedactionError,
@@ -340,12 +341,19 @@ def approve_document_redactions(
 ) -> DocumentRecord:
     try:
         vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)
+        ocr_adapter = PaddleOcrAdapter(
+            det_model_dir=settings.ocr_det_model_dir,
+            rec_model_dir=settings.ocr_rec_model_dir,
+            cls_model_dir=settings.ocr_cls_model_dir,
+            max_image_dimension=settings.max_image_dimension,
+        )
         return approve_redactions(
             session=session,
             document_id=document_id,
             actor_id=context.actor_id,
             vault=vault,
             tenant_id=context.tenant_id,
+            ocr_adapter=ocr_adapter,
         )
     except VaultConfigurationError as exc:
         raise HTTPException(

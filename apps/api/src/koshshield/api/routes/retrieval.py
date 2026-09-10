@@ -1,10 +1,13 @@
 import base64
+import hashlib
+import io
 import logging
 import time
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
+from PIL import Image
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -506,6 +509,11 @@ def get_authorized_evidence_page_image(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Visual evidence derivative is missing",
         )
+    if (page.masked_page_image_media_type or "image/png") != "image/png":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid visual derivative media type",
+        )
 
     try:
         vault = EncryptedVault(settings.vault_dir, settings.master_key_base64)
@@ -526,13 +534,40 @@ def get_authorized_evidence_page_image(
     except Exception as err:
         logger.error("Failed to decrypt evidence image derivative: %s", err)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve visual evidence image.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evidence not found",
+        ) from err
+
+    # Validate stored hash
+    if hashlib.sha256(image_bytes).hexdigest() != page.masked_page_image_sha256:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+
+    # Validate PNG magic signature
+    if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+
+    # Validate byte limit
+    if len(image_bytes) > settings.max_upload_bytes:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found")
+
+    # Validate dimension limits
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as pil_img:
+            w, h = pil_img.size
+            if w > settings.max_image_dimension or h > settings.max_image_dimension:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found"
+                )
+    except HTTPException:
+        raise
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Evidence not found"
         ) from err
 
     return Response(
         content=image_bytes,
-        media_type=page.masked_page_image_media_type or "image/png",
+        media_type="image/png",
         headers={
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
@@ -660,6 +695,7 @@ def answer_retrieval(
             and page_rec.visual_redaction_version == chunk.index_version
             and page_rec.encrypted_masked_page_image_path
             and page_rec.masked_page_image_sha256
+            and (page_rec.masked_page_image_media_type or "image/png") == "image/png"
         ):
             try:
                 ver = page_rec.visual_redaction_version
@@ -669,15 +705,28 @@ def answer_retrieval(
                     evidence_hash=page_rec.masked_page_image_sha256,
                     path=Path(page_rec.encrypted_masked_page_image_path),
                 )
-                # Enforce bound on image bytes (max 2.5MB per image)
-                if len(img_bytes) <= 2_500_000:
-                    media_type = page_rec.masked_page_image_media_type or "image/png"
-                    b64_str = base64.b64encode(img_bytes).decode("ascii")
-                    masked_images_data_urls.append(f"data:{media_type};base64,{b64_str}")
-                    masked_image_hashes.append(page_rec.masked_page_image_sha256)
+                # Stored hash check
+                if hashlib.sha256(img_bytes).hexdigest() != page_rec.masked_page_image_sha256:
+                    continue
+                # PNG magic signature check
+                if not img_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                    continue
+                # Enforce bound on image bytes (max 2.5MB and upload limit)
+                if len(img_bytes) > min(2_500_000, settings.max_upload_bytes):
+                    continue
+                # Dimension checks with Pillow
+                with Image.open(io.BytesIO(img_bytes)) as pil_img:
+                    w, h = pil_img.size
+                    if w > settings.max_image_dimension or h > settings.max_image_dimension:
+                        continue
+
+                b64_str = base64.b64encode(img_bytes).decode("ascii")
+                masked_images_data_urls.append(f"data:image/png;base64,{b64_str}")
+                masked_image_hashes.append(page_rec.masked_page_image_sha256)
             except Exception as decrypt_err:
                 logger.warning(
-                    "Failed to decrypt masked derivative for multimodal context: %s", decrypt_err
+                    "Failed to decrypt or validate masked derivative for multimodal context: %s",
+                    decrypt_err,
                 )
 
     # 5. Format chunks into bounded untrusted context
@@ -740,7 +789,9 @@ def answer_retrieval(
                 page_number=allowed_chunk_map[cid].page_number,
                 evidence_hash=allowed_chunk_map[cid].evidence_hash,
                 masked_content_hash=allowed_chunk_map[cid].masked_content_hash,
-                image_available=bool(allowed_chunk_map[cid].visual_regions),
+                image_available=any(
+                    r.image_available for r in allowed_chunk_map[cid].visual_regions
+                ),
             )
             for cid in valid_cids
         ]

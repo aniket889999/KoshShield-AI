@@ -275,7 +275,7 @@ def _build_0002_contract() -> SchemaContract:
     return SchemaContract(revision_id="0002_add_tenant_ownership", tables=tables)
 
 
-def _build_head_contract() -> SchemaContract:
+def _build_0003_contract() -> SchemaContract:
     base = _build_0002_contract()
     tables = dict(base.tables)
 
@@ -319,14 +319,41 @@ def _build_head_contract() -> SchemaContract:
     return SchemaContract(revision_id="0003_visual_evidence_derivatives", tables=tables)
 
 
+def _build_head_contract() -> SchemaContract:
+    base = _build_0003_contract()
+    tables = dict(base.tables)
+
+    tables["document_visual_regions"] = TableContract(
+        name="document_visual_regions",
+        columns=tables["document_visual_regions"].columns,
+        forbidden_columns=tables["document_visual_regions"].forbidden_columns,
+        foreign_keys=tables["document_visual_regions"].foreign_keys,
+        indexes=tables["document_visual_regions"].indexes,
+        unique_constraints=tables["document_visual_regions"].unique_constraints
+        + (
+            (
+                "tenant_id",
+                "document_id",
+                "page_number",
+                "region_sequence",
+                "redaction_version",
+            ),
+        ),
+    )
+
+    return SchemaContract(revision_id="0004_visual_region_uniqueness", tables=tables)
+
+
 SCHEMA_CONTRACT_0001 = _build_0001_contract()
 SCHEMA_CONTRACT_0002 = _build_0002_contract()
+SCHEMA_CONTRACT_0003 = _build_0003_contract()
 SCHEMA_CONTRACT_HEAD = _build_head_contract()
 
 RECOGNIZED_REVISIONS: dict[str, SchemaContract] = {
     "0001_initial_schema": SCHEMA_CONTRACT_0001,
     "0002_add_tenant_ownership": SCHEMA_CONTRACT_0002,
-    "0003_visual_evidence_derivatives": SCHEMA_CONTRACT_HEAD,
+    "0003_visual_evidence_derivatives": SCHEMA_CONTRACT_0003,
+    "0004_visual_region_uniqueness": SCHEMA_CONTRACT_HEAD,
 }
 
 RECOGNIZED_TABLES = set(SCHEMA_CONTRACT_HEAD.tables.keys())
