@@ -89,7 +89,10 @@ class VectorStore(Protocol):
 
     def delete_version_chunks(self, document_id: str, tenant_id: str, index_version: int) -> int:
         """Remove chunks for a specific index_version of a document, strictly scoped to tenant_id.
-        Must never delete an active generation.
+
+        Note: The vector store cannot independently know the database active version.
+        The caller (indexing service) is authoritatively responsible for ensuring this
+        is not invoked for an active generation.
         """
         ...
 

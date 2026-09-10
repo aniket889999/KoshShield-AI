@@ -93,11 +93,11 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             )
 
         if not self.model_dir.exists() or not self.model_dir.is_dir():
-            return False, f"BGE-M3 directory does not exist on local disk: {self.model_dir}"
+            return False, "BGE-M3 directory does not exist on local disk"
 
         config_path = self.model_dir / "config.json"
         if not config_path.exists():
-            return False, f"BGE-M3 model config missing in: {self.model_dir}"
+            return False, "BGE-M3 model config missing on local disk"
 
         # Verify local weight files exist
         has_weights = any(
@@ -105,7 +105,7 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             for name in ["model.safetensors", "pytorch_model.bin", "model.onnx"]
         )
         if not has_weights:
-            return False, f"BGE-M3 model weights missing in: {self.model_dir}"
+            return False, "BGE-M3 model weights missing on local disk"
 
         try:
             import FlagEmbedding  # noqa: F401

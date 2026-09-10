@@ -170,6 +170,8 @@ class DocumentIndexingService:
             )
 
         current_phase = "INIT"
+        activated = False
+        completed_at: str | None = None
         try:
             # 1. Validate Privacy Gate
             current_phase = "PRIVACY_GATE"
@@ -311,8 +313,12 @@ class DocumentIndexingService:
                     f"version {target_version} could not be verified in vector store"
                 )
 
-            # 7. Atomically mark new version active in metadata database
-            current_phase = "METADATA_COMMIT"
+            # 7. Irreversible Activation Transaction:
+            # In one database transaction: replace authoritative DocumentChunkRecord rows,
+            # set active_index_version and INDEXED status, record DOCUMENT_INDEXED, and commit once.
+            current_phase = "ACTIVATION_COMMIT"
+            completed_at = datetime.now(UTC).isoformat()
+
             session.execute(
                 delete(DocumentChunkRecord).where(DocumentChunkRecord.document_id == doc.id)
             )
@@ -321,27 +327,7 @@ class DocumentIndexingService:
             doc.index_cleanup_pending = False
             validate_transition(doc.status, DocumentState.INDEXED)
             doc.status = DocumentState.INDEXED
-            session.commit()
-            session.refresh(doc)
 
-            # 8. Delete stale points from older versions
-            current_phase = "STALE_CLEANUP"
-            try:
-                self.vector_store.delete_stale_chunks(
-                    document_id=doc.id,
-                    tenant_id=doc_tenant_id,
-                    active_version=target_version,
-                )
-            except Exception as stale_err:
-                logger.warning(
-                    "Stale chunk deletion failed for doc '%s': %s. Marking cleanup pending.",
-                    doc.id,
-                    stale_err,
-                )
-                doc.index_cleanup_pending = True
-                session.commit()
-
-            completed_at = datetime.now(UTC).isoformat()
             record_audit_event(
                 session=session,
                 tenant_id=doc_tenant_id,
@@ -357,7 +343,44 @@ class DocumentIndexingService:
                     "evidence_sha256": doc.sha256,
                 },
             )
+
+            # Single atomic commit is the irreversible boundary
             session.commit()
+            session.refresh(doc)
+            activated = True
+
+            # 8. Post-activation best-effort stale generation cleanup
+            # Never delete or revert the newly active generation.
+            current_phase = "STALE_CLEANUP"
+            try:
+                auth_doc = session.scalar(select(DocumentRecord).where(DocumentRecord.id == doc.id))
+                auth_active_v = auth_doc.active_index_version if auth_doc else target_version
+                if auth_active_v is not None:
+                    self.vector_store.delete_stale_chunks(
+                        document_id=doc.id,
+                        tenant_id=doc_tenant_id,
+                        active_version=auth_active_v,
+                    )
+            except Exception as stale_err:
+                logger.warning(
+                    "Stale chunk deletion failed for doc '%s': %s. Marking cleanup pending.",
+                    doc.id,
+                    stale_err,
+                )
+                try:
+                    auth_doc = session.scalar(
+                        select(DocumentRecord).where(DocumentRecord.id == doc.id)
+                    )
+                    if auth_doc:
+                        auth_doc.index_cleanup_pending = True
+                        session.commit()
+                except Exception as flag_err:
+                    logger.warning(
+                        "Cleanup-marker persistence failed for doc '%s': %s",
+                        doc.id,
+                        flag_err,
+                    )
+                    session.rollback()
 
             return IndexingResult(
                 document_id=doc.id,
@@ -371,19 +394,45 @@ class DocumentIndexingService:
 
         except Exception as err:
             logger.error("Failed to index document '%s': %s", doc.id, err)
-            # Orphan version cleanup executes only when target version is strictly newer
-            # than previous active version. Enforces invariant preventing active deletion.
-            if previous_active_version is not None and target_version == previous_active_version:
+            session.rollback()
+
+            # Re-read authoritative database state before delete_version_chunks
+            authoritative_doc = session.scalar(
+                select(DocumentRecord).where(DocumentRecord.id == doc.id)
+            )
+            auth_active_version = (
+                authoritative_doc.active_index_version
+                if authoritative_doc
+                else previous_active_version
+            )
+
+            # If activation already committed, NEVER delete or revert the newly active generation!
+            if activated or (
+                auth_active_version is not None and target_version == auth_active_version
+            ):
                 logger.warning(
-                    "Skipping orphan cleanup for doc '%s': "
-                    "target version %s matches active generation",
-                    doc.id,
+                    "Activation committed or target version %s is active for doc '%s'. "
+                    "Skipping orphan deletion to protect active generation.",
                     target_version,
+                    doc.id,
                 )
-            elif previous_active_version is None or target_version > previous_active_version:
-                assert (
-                    previous_active_version is None or target_version != previous_active_version
-                ), "Cannot delete active generation"
+                if authoritative_doc and authoritative_doc.status != DocumentState.INDEXED:
+                    authoritative_doc.status = DocumentState.INDEXED
+                    authoritative_doc.active_index_version = auth_active_version
+                    session.commit()
+                return IndexingResult(
+                    document_id=doc.id,
+                    status=DocumentState.INDEXED,
+                    chunk_count=len(all_chunks) if "all_chunks" in locals() else 0,
+                    redaction_version=target_version,
+                    active_index_version=auth_active_version or target_version,
+                    tenant_id=doc_tenant_id,
+                    completed_at=completed_at or datetime.now(UTC).isoformat(),
+                )
+
+            # Pre-activation failure: target_version is not active in DB.
+            # Remove only the non-active target generation.
+            if auth_active_version is None or target_version > auth_active_version:
                 try:
                     self.vector_store.delete_version_chunks(
                         document_id=doc.id,
@@ -398,11 +447,10 @@ class DocumentIndexingService:
                         cleanup_err,
                     )
 
-            session.rollback()
             doc_fail = session.scalar(select(DocumentRecord).where(DocumentRecord.id == doc.id))
             if doc_fail:
                 error_code = self._classify_error_code(err, phase=current_phase)
-                if previous_active_version is None:
+                if auth_active_version is None:
                     # First-index failure
                     doc_fail.status = DocumentState.INDEX_FAILED
                     event_type = "DOCUMENT_INDEXING_FAILED"
@@ -415,13 +463,13 @@ class DocumentIndexingService:
                 else:
                     # Failed reindex preserves previous active generation as searchable
                     doc_fail.status = DocumentState.INDEXED
-                    doc_fail.active_index_version = previous_active_version
+                    doc_fail.active_index_version = auth_active_version
                     event_type = "DOCUMENT_REINDEXING_FAILED"
                     audit_details = {
                         "error_code": error_code,
                         "failure_code": error_code,
                         "target_version": target_version,
-                        "active_index_version": previous_active_version,
+                        "active_index_version": auth_active_version,
                         "failure_type": "REINDEX",
                     }
 

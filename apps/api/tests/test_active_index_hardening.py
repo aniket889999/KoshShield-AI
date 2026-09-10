@@ -600,18 +600,19 @@ def test_scenario_12_thread_safe_singleton_provider_initialization() -> None:
     instances = []
 
     def _worker() -> None:
-        with patch(
-            "koshshield.services.retrieval.embeddings.bge_m3.BgeM3EmbeddingProvider.is_available",
-            return_value=(True, "Ready"),
-        ):
-            provider = get_singleton_embedding_provider(settings)
-            instances.append(provider)
+        provider = get_singleton_embedding_provider(settings)
+        instances.append(provider)
 
-    threads = [threading.Thread(target=_worker) for _ in range(10)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    with patch.object(
+        BgeM3EmbeddingProvider,
+        "is_available",
+        return_value=(True, "Ready"),
+    ):
+        threads = [threading.Thread(target=_worker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     assert len(instances) == 10
     first = instances[0]

@@ -147,10 +147,17 @@ def test_qdrant_verify_points_tenant_isolation() -> None:
     mock_rec1.id = "p1"
     mock_rec1.payload = {"tenant_id": "tenant-alpha"}
 
-    mock_client.retrieve.return_value = [mock_rec1]
+    mock_client.scroll.return_value = ([mock_rec1], None)
 
     # Verify matching tenant returns True
     assert store.verify_points(["p1"], tenant_id="tenant-alpha") is True
+
+    # Verify scroll was invoked with tenant_id and has_id filters
+    scroll_filter = mock_client.scroll.call_args[1]["scroll_filter"]
+    assert isinstance(scroll_filter, models.Filter)
+    conds = scroll_filter.must
+    assert any(getattr(c, "has_id", None) == ["p1"] for c in conds)
+    assert any(getattr(c, "key", None) == "tenant_id" for c in conds)
 
     # Verify different tenant returns False (isolation violation)
     assert store.verify_points(["p1"], tenant_id="tenant-beta") is False

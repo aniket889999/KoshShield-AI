@@ -56,6 +56,29 @@ class QdrantVectorStore(VectorStore):
         ("redaction_version", models.PayloadSchemaType.INTEGER),
         ("index_version", models.PayloadSchemaType.INTEGER),
     ]
+    BATCH_SIZE: int = 256
+
+    @staticmethod
+    def _extract_schema_type(idx_info: Any) -> str:
+        val = None
+        if isinstance(idx_info, dict):
+            val = idx_info.get("data_type") or idx_info.get("type")
+        elif hasattr(idx_info, "data_type") and not isinstance(
+            idx_info, (models.PayloadSchemaType, str)
+        ):
+            val = idx_info.data_type
+        elif hasattr(idx_info, "type") and not isinstance(
+            idx_info, (models.PayloadSchemaType, str)
+        ):
+            val = idx_info.type
+        else:
+            val = idx_info
+
+        if hasattr(val, "value"):
+            return str(val.value).lower()
+        if isinstance(val, str):
+            return val.lower()
+        return str(val).lower() if val is not None else ""
 
     @classmethod
     def _validate_local_url(cls, url: str) -> None:
@@ -72,7 +95,8 @@ class QdrantVectorStore(VectorStore):
             self._client.get_collections()
             return True, "Qdrant vector store is ready"
         except Exception as err:
-            return False, f"Qdrant is unreachable at {self.qdrant_url}: {err}"
+            logger.error("Qdrant vector store is unreachable: %s", err)
+            return False, "Qdrant vector store is unreachable"
 
     def ensure_collection(self, dense_dim: int) -> None:
         """Create or validate the Qdrant collection with named dense and sparse vectors
@@ -173,19 +197,42 @@ class QdrantVectorStore(VectorStore):
 
             # Validate and create required payload indexes on existing collections
             payload_schema = getattr(info, "payload_schema", None) or {}
-            for field, schema_type in self.REQUIRED_PAYLOAD_INDEXES:
-                if field not in payload_schema:
+            for field, expected_type in self.REQUIRED_PAYLOAD_INDEXES:
+                expected_str = self._extract_schema_type(expected_type)
+                if field in payload_schema:
+                    actual_str = self._extract_schema_type(payload_schema[field])
+                    if actual_str != expected_str:
+                        raise VectorStoreError(
+                            f"Collection '{self.collection_name}' payload index '{field}' has "
+                            f"schema type '{actual_str}', expected '{expected_str}'. Fail closed."
+                        )
+                else:
                     try:
                         self._client.create_payload_index(
                             collection_name=self.collection_name,
                             field_name=field,
-                            field_schema=schema_type,
+                            field_schema=expected_type,
                         )
                     except Exception as err:
                         raise VectorStoreError(
                             f"Collection '{self.collection_name}' missing required payload "
                             f"index '{field}' and creation failed: {err}"
                         ) from err
+
+                    # Re-fetch collection metadata and verify index creation and schema type
+                    updated_info = self._client.get_collection(self.collection_name)
+                    updated_schema = getattr(updated_info, "payload_schema", None) or {}
+                    if field not in updated_schema:
+                        raise VectorStoreError(
+                            f"Collection '{self.collection_name}' payload index '{field}' was not "
+                            "present after creation."
+                        )
+                    actual_str = self._extract_schema_type(updated_schema[field])
+                    if actual_str != expected_str:
+                        raise VectorStoreError(
+                            f"Collection '{self.collection_name}' created payload index '{field}' "
+                            f"has schema type '{actual_str}', expected '{expected_str}'."
+                        )
 
     def upsert_chunks(self, chunks: list[VectorStoreChunk]) -> int:
         if not chunks:
@@ -231,22 +278,39 @@ class QdrantVectorStore(VectorStore):
             raise VectorStoreError(f"Failed to upsert points into Qdrant: {err}") from err
 
     def verify_points(self, point_ids: list[str], tenant_id: str) -> bool:
-        """Verify that all expected points exist and strictly belong to tenant_id."""
+        """Verify that all expected points exist and strictly belong to tenant_id using
+        tenant-filtered Qdrant scroll operations.
+        """
         if not point_ids:
             return True
         try:
-            records = self._client.retrieve(
-                collection_name=self.collection_name,
-                ids=point_ids,
-                with_payload=True,
-            )
-            if len(records) != len(point_ids):
-                return False
-            for r in records:
-                payload = r.payload or {}
-                if payload.get("tenant_id") != tenant_id:
+            total_verified = 0
+            for i in range(0, len(point_ids), self.BATCH_SIZE):
+                batch_ids = point_ids[i : i + self.BATCH_SIZE]
+                scroll_filter = models.Filter(
+                    must=[
+                        models.HasIdCondition(has_id=batch_ids),
+                        models.FieldCondition(
+                            key="tenant_id",
+                            match=models.MatchValue(value=tenant_id),
+                        ),
+                    ]
+                )
+                records, _ = self._client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=scroll_filter,
+                    limit=len(batch_ids),
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                if len(records) != len(batch_ids):
                     return False
-            return True
+                for r in records:
+                    payload = r.payload or {}
+                    if payload.get("tenant_id") != tenant_id:
+                        return False
+                total_verified += len(records)
+            return total_verified == len(point_ids)
         except Exception as err:
             logger.error("Failed to verify points in Qdrant: %s", err)
             return False
@@ -283,7 +347,10 @@ class QdrantVectorStore(VectorStore):
 
     def delete_version_chunks(self, document_id: str, tenant_id: str, index_version: int) -> int:
         """Remove points for a specific index_version of a document, strictly scoped to tenant_id.
-        Guarded against active generation deletion.
+
+        Note: The vector store cannot independently know the database active version.
+        The caller (indexing service) is authoritatively responsible for ensuring this
+        is not invoked for an active generation.
         """
         delete_filter = models.Filter(
             must=[
@@ -340,26 +407,45 @@ class QdrantVectorStore(VectorStore):
     def retrieve_points(
         self, point_ids: list[str], tenant_id: str
     ) -> list[VectorStoreSearchResult]:
-        """Retrieve points by ID, enforcing mandatory tenant isolation."""
+        """Retrieve points by ID, strictly enforcing tenant filtering inside Qdrant
+        scroll operations followed by defensive payload validation.
+        """
         if not point_ids:
             return []
         try:
-            records = self._client.retrieve(
-                collection_name=self.collection_name,
-                ids=point_ids,
-                with_payload=True,
-            )
-            return [
-                VectorStoreSearchResult(
-                    point_id=str(r.id),
-                    score=1.0,
-                    payload=r.payload or {},
+            results: list[VectorStoreSearchResult] = []
+            for i in range(0, len(point_ids), self.BATCH_SIZE):
+                batch_ids = point_ids[i : i + self.BATCH_SIZE]
+                scroll_filter = models.Filter(
+                    must=[
+                        models.HasIdCondition(has_id=batch_ids),
+                        models.FieldCondition(
+                            key="tenant_id",
+                            match=models.MatchValue(value=tenant_id),
+                        ),
+                    ]
                 )
-                for r in records
-                if (r.payload or {}).get("tenant_id") == tenant_id
-            ]
+                records, _ = self._client.scroll(
+                    collection_name=self.collection_name,
+                    scroll_filter=scroll_filter,
+                    limit=len(batch_ids),
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for r in records:
+                    payload = r.payload or {}
+                    if payload.get("tenant_id") == tenant_id:
+                        results.append(
+                            VectorStoreSearchResult(
+                                point_id=str(r.id),
+                                score=1.0,
+                                payload=payload,
+                            )
+                        )
+            return results
         except Exception as err:
-            raise VectorStoreError(f"Failed to retrieve points: {err}") from err
+            logger.error("Failed to retrieve points from Qdrant: %s", err)
+            raise VectorStoreError("Failed to retrieve points from vector store.") from err
 
     @staticmethod
     def _build_filter(

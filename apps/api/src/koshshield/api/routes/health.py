@@ -40,9 +40,9 @@ async def probe(endpoint: str) -> DependencyState:
         async with httpx.AsyncClient(timeout=0.35, trust_env=False) as client:
             response = await client.get(endpoint)
             response.raise_for_status()
-        return DependencyState(status="ready", endpoint=endpoint)
+        return DependencyState(status="ready", endpoint=None)
     except (httpx.HTTPError, OSError):
-        return DependencyState(status="unavailable", endpoint=endpoint)
+        return DependencyState(status="unavailable", endpoint=None)
 
 
 @router.get("/health/live")
@@ -104,6 +104,12 @@ async def system_status(
         else "unavailable"
     )
 
+    stable_emb_reason = (
+        "ready"
+        if emb_ready
+        else ("not_configured" if not settings.embedding_model_dir else "unavailable")
+    )
+
     return SystemStatus(
         application=settings.app_name,
         environment=settings.environment,
@@ -114,6 +120,6 @@ async def system_status(
         metadata_store=DependencyState(status="ready"),
         vector_store=qdrant,
         local_model=model,
-        ocr=DependencyState(status=ocr_status, endpoint=ocr_reason),
-        embedding=DependencyState(status=emb_status, endpoint=emb_reason),
+        ocr=DependencyState(status=ocr_status, endpoint=None),
+        embedding=DependencyState(status=emb_status, endpoint=stable_emb_reason),
     )

@@ -155,6 +155,12 @@ def index_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Document not found or invalid request.",
         ) from err
+    except Exception as err:
+        logger.error("Unexpected error during document indexing: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document indexing failed.",
+        ) from err
 
 
 @router.get(
@@ -232,11 +238,21 @@ def retrieval_status(
         or 0
     )
 
+    public_emb_reason = (
+        "BGE-M3 model ready"
+        if emb_ready
+        else (
+            "BGE-M3 model not configured"
+            if not settings.embedding_model_dir
+            else "BGE-M3 model unavailable"
+        )
+    )
+
     return RetrievalStatusResponse(
         collection_name=settings.qdrant_collection,
         vector_store_status="ready" if vs_ready else "unavailable",
         embedding_model_status="ready" if emb_ready else "unavailable",
-        embedding_model_reason=emb_reason,
+        embedding_model_reason=public_emb_reason,
         total_chunks=total_chunks,
         indexed_documents_count=int(indexed_docs),
     )
@@ -306,22 +322,29 @@ def search_retrieval(
             ],
         )
     except ModelUnavailableError as err:
+        logger.error("Local embedding model unavailable: %s", err)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Local embedding model unavailable: {err}",
+            detail="Local embedding model unavailable.",
         ) from err
     except VectorStoreUnavailableError as err:
+        logger.error("Vector store unavailable: %s", err)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Vector store unavailable: {err}",
+            detail="Vector store unavailable.",
         ) from err
     except VectorStoreError as err:
+        logger.error("Vector store error: %s", err)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Vector store error: {err}",
+            detail="Vector store error.",
         ) from err
     except ValueError as err:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
+        logger.warning("Invalid retrieval request: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid retrieval query or parameters.",
+        ) from err
 
 
 @router.get("/retrieval/evidence/{chunk_id}/page-image")
@@ -400,9 +423,16 @@ def get_authorized_evidence_page_image(
             path=Path(page.encrypted_page_image_path),
         )
     except VaultConfigurationError as err:
+        logger.error("Vault configuration error: %s", err)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(err),
+            detail="Vault storage is unavailable or misconfigured.",
+        ) from err
+    except Exception as err:
+        logger.error("Failed to decrypt evidence image: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve visual evidence image.",
         ) from err
 
     return Response(
