@@ -1,0 +1,23 @@
+{
+  "case_id": "PROC-001",
+  "title": "Pump supply technical evaluation",
+  "synthetic": true,
+  "notice": "SYNTHETIC TEST DATA - NOT A REAL TENDER OR ENGINEERING RECOMMENDATION",
+  "contact": {
+    "label": "Fictional procurement contact",
+    "pan": "TESTP0000A",
+    "phone": "9000000000",
+    "email": "proc001@example.invalid"
+  },
+  "requirements": [
+    {"id": "R1", "field": "flow", "operator": ">=", "value": 80, "unit": "m3/h"},
+    {"id": "R2", "field": "pressure", "operator": ">=", "value": 12, "unit": "bar"},
+    {"id": "R3", "field": "delivery", "operator": "<=", "value": 30, "unit": "days"},
+    {"id": "R4", "field": "warranty", "operator": ">=", "value": 24, "unit": "months"}
+  ],
+  "proposals": [
+    {"supplier": "Supplier A", "flow": 80, "pressure": 12, "delivery": 28, "warranty": 24},
+    {"supplier": "Supplier B", "flow": 75, "pressure": 12, "delivery": 21, "warranty": 12},
+    {"supplier": "Supplier C", "flow": 82, "pressure": 13, "delivery": null, "warranty": 24}
+  ]
+}

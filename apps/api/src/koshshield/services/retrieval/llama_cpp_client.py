@@ -1,7 +1,7 @@
 import json
 import logging
 import urllib.parse
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -41,7 +41,7 @@ class LlamaCppResponseInvalidError(LlamaCppClientError):
 
 
 class LlamaCppSecurityError(LlamaCppClientError):
-    """Raised when request violates SSRF or security constraints."""
+    """Raised when an SSRF or host validation rule is violated."""
 
     failure_code: str = "SSRF_BLOCKED"
 
@@ -57,45 +57,51 @@ class GroundedModelOutput(BaseModel):
 
 
 class LlamaCppUsage(BaseModel):
-    """Strict schema for token usage metrics."""
+    """Strict schema for token usage metrics when provided by the runtime."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="ignore", strict=True)
 
-    prompt_tokens: int = Field(default=0, ge=0, le=1_000_000)
-    completion_tokens: int = Field(default=0, ge=0, le=1_000_000)
-    total_tokens: int = Field(default=0, ge=0, le=2_000_000)
+    prompt_tokens: int = Field(..., ge=0, le=1_000_000)
+    completion_tokens: int = Field(..., ge=0, le=1_000_000)
+    total_tokens: int = Field(..., ge=0, le=2_000_000)
 
 
 class LlamaCppMessage(BaseModel):
     """Strict schema for chat completion message."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="ignore", strict=True)
 
-    role: str = Field(default="assistant")
+    role: Literal["assistant"] = "assistant"
     content: str = Field(..., min_length=1)
 
 
 class LlamaCppChoice(BaseModel):
     """Strict schema for chat completion choice."""
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="ignore", strict=True)
 
     index: int = Field(default=0, ge=0)
     message: LlamaCppMessage
-    finish_reason: str | None = None
+    finish_reason: Literal["stop", "length", "content_filter"] | None = None
 
 
 class LlamaCppChatCompletionResponse(BaseModel):
-    """Strict schema for full llama.cpp chat completion response."""
+    """Strict schema for full llama.cpp chat completion response.
 
-    model_config = ConfigDict(extra="forbid", strict=True)
+    Permits legitimate optional runtime diagnostics on the envelope,
+    requires exactly one usable choice with assistant role,
+    and treats missing usage as explicitly unavailable (None) rather
+    than silently reporting zero-token usage.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True)
 
     id: str | None = None
-    object: str = Field(default="chat.completion")
+    object: str | None = None
     created: int | None = None
     model: str | None = None
     choices: list[LlamaCppChoice] = Field(..., min_length=1, max_length=1)
-    usage: LlamaCppUsage = Field(default_factory=LlamaCppUsage)
+    usage: LlamaCppUsage | None = None
 
 
 class LlamaCppMultimodalClient:
@@ -190,39 +196,71 @@ class LlamaCppMultimodalClient:
 
         return parsed
 
+    def _is_matching_build(self, candidate_build: str) -> bool:
+        """Verifies candidate build string against allowlisted build.
+
+        Exact comparison only (e.g. 'b10809' or '10809' matching 'b10809').
+        Rejects substrings like 'b108090'.
+        """
+        cand = candidate_build.strip().lower()
+        target = self.allowlisted_build.strip().lower()
+        if not cand:
+            return False
+        if cand == target:
+            return True
+        target_num = target.lstrip("b")
+        if cand == target_num:
+            return True
+        return cand.startswith("b") and cand.lstrip("b") == target_num and target_num.isdigit()
+
+    def _is_matching_commit(self, candidate_commit: str) -> bool:
+        """Verifies candidate commit hash against allowlisted commit.
+
+        Must be exact match (e.g. '5266f24') or a valid full 40-hex commit hash
+        starting with the allowlisted commit prefix.
+        Rejects release versions, substrings, or mismatched lengths like '5266f240'.
+        """
+        cand = candidate_commit.strip().lower()
+        target = self.allowlisted_commit.strip().lower()
+        if not cand:
+            return False
+        if cand == target:
+            return True
+        if len(cand) == 40 and all(c in "0123456789abcdef" for c in cand):
+            return cand.startswith(target)
+        return False
+
     def _verify_build_info(self, build_info: Any) -> bool:
         """Strictly verifies build_info against allowlisted build and commit.
 
-        Rejects missing, malformed, mismatched, or ambiguous metadata.
+        Rejects missing, malformed, mismatched, ambiguous metadata,
+        substring matches (e.g. b108090-5266f240), and version substitutions.
         """
         if not build_info:
             return False
 
         if isinstance(build_info, str):
             clean = build_info.strip().lower()
-            has_build = (
-                self.allowlisted_build.lower() in clean
-                or self.allowlisted_build.lstrip("b").lower() in clean
-            )
-            has_commit = (
-                self.allowlisted_commit.lower() in clean
-                or self.allowlisted_release.lower() in clean
-            )
-            return has_build and has_commit
+            # Documented server format is 'b{build}-{commit}' or 'b{build} {commit}'
+            if "-" in clean:
+                parts = clean.split("-", 1)
+            elif " " in clean:
+                parts = clean.split(None, 1)
+            else:
+                return False
+
+            build_part = parts[0].strip()
+            commit_part = parts[1].strip()
+
+            return self._is_matching_build(build_part) and self._is_matching_commit(commit_part)
 
         if isinstance(build_info, dict):
+            if "build" not in build_info or "commit" not in build_info:
+                return False
             build_val = str(build_info.get("build", "")).strip().lower()
             commit_val = str(build_info.get("commit", "")).strip().lower()
-            version_val = str(build_info.get("version", "")).strip().lower()
-            has_build = (
-                build_val == self.allowlisted_build.lower()
-                or build_val == self.allowlisted_build.lstrip("b").lower()
-            )
-            has_commit = (
-                commit_val == self.allowlisted_commit.lower()
-                or version_val == self.allowlisted_release.lower()
-            )
-            return has_build and has_commit
+
+            return self._is_matching_build(build_val) and self._is_matching_commit(commit_val)
 
         return False
 
@@ -449,7 +487,23 @@ class LlamaCppMultimodalClient:
             )
             raise LlamaCppResponseInvalidError("Llama.cpp response structure is invalid") from err
 
-        content_str = chat_resp.choices[0].message.content
+        # Verify configured model identity when supplied by the runtime
+        if chat_resp.model is not None and chat_resp.model != self.model_id:
+            logger.warning("Llama.cpp returned unexpected model identity (MODEL_RESPONSE_INVALID)")
+            raise LlamaCppResponseInvalidError(
+                f"Model identity in completion does not match configured alias '{self.model_id}'"
+            )
+
+        choice = chat_resp.choices[0]
+        if choice.finish_reason is not None and choice.finish_reason not in {"stop", "length"}:
+            logger.warning(
+                "Llama.cpp choice has unsupported finish reason (MODEL_RESPONSE_INVALID)"
+            )
+            raise LlamaCppResponseInvalidError(
+                "Model response ended with unsupported finish reason"
+            )
+
+        content_str = choice.message.content
         if not content_str.strip():
             raise LlamaCppResponseInvalidError("Model returned empty message content")
 
@@ -465,9 +519,14 @@ class LlamaCppMultimodalClient:
             )
             raise LlamaCppResponseInvalidError("Model generated invalid output structure") from err
 
-        prompt_tokens = chat_resp.usage.prompt_tokens
-        completion_tokens = chat_resp.usage.completion_tokens
-        total_tokens = chat_resp.usage.total_tokens or (prompt_tokens + completion_tokens)
+        if chat_resp.usage is not None:
+            prompt_tokens = chat_resp.usage.prompt_tokens
+            completion_tokens = chat_resp.usage.completion_tokens
+            total_tokens = chat_resp.usage.total_tokens
+        else:
+            prompt_tokens = None
+            completion_tokens = None
+            total_tokens = None
 
         return {
             "answer": model_output.answer.strip(),

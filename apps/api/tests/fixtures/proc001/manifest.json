@@ -1,0 +1,54 @@
+{
+  "case_id": "PROC-001",
+  "files": [
+    {
+      "bytes": 2841,
+      "path": "README.md",
+      "role": "evaluation_only",
+      "sha256": "13ad22d098ddc834f613a153f21bd3d9e4c0b4fe52afa37b34eeea24b7c44113"
+    },
+    {
+      "bytes": 3154,
+      "path": "expected/proc001-ground-truth.json",
+      "role": "evaluation_only",
+      "sha256": "c913b6a9d36a6088abf8b5613054123927fbef8e74d0546874c3640fce1e31d0"
+    },
+    {
+      "bytes": 363,
+      "path": "fixture-validation.json",
+      "role": "evaluation_only",
+      "sha256": "6942ae6768c267b3f163f6b5c8bdde8baab8a2e69f6d556a44d30797d8c74050"
+    },
+    {
+      "bytes": 10836,
+      "path": "generate_fixtures.py",
+      "role": "evaluation_only",
+      "sha256": "915393e6cc4c4a8efde7552579b63cc45cdf015dfaf7b55d9ba7d3ccef3e8c71"
+    },
+    {
+      "bytes": 78,
+      "path": "inputs/proc001-measurements.csv",
+      "role": "input",
+      "sha256": "ad3c9cb5b5c947f4576da7be697cea054578dfeac99b0ada42c53eb692964428"
+    },
+    {
+      "bytes": 4475,
+      "path": "inputs/proc001-native.pdf",
+      "role": "input",
+      "sha256": "a5a5b309833479348d83238f27fe7408a40c9599b2873c85f3f897d34b11a97d"
+    },
+    {
+      "bytes": 302850,
+      "path": "inputs/proc001-scanned.pdf",
+      "role": "input",
+      "sha256": "b0198898c98d4041dbe005594db62ae1229fbdc702b460deb439ccac1168f448"
+    },
+    {
+      "bytes": 1002,
+      "path": "source_case.json",
+      "role": "evaluation_only",
+      "sha256": "6fc709bf39e783620e12d2dec555fbf0fd69bc9abd497ef942b3a1ba69a0f5a2"
+    }
+  ],
+  "synthetic": true
+}

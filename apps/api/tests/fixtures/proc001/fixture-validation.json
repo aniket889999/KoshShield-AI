@@ -1,0 +1,14 @@
+{
+  "case_id": "PROC-001",
+  "fixture_checks": "PASSED",
+  "ground_truth_comparisons_checked": 12,
+  "live_embeddings": "NOT_EXECUTED",
+  "live_ocr": "NOT_EXECUTED",
+  "live_qdrant": "NOT_EXECUTED",
+  "live_qwen": "NOT_EXECUTED",
+  "measurement_rows_checked": 3,
+  "native_pages": 2,
+  "scan_has_embedded_text": false,
+  "scanned_pages": 2,
+  "synthetic": true
+}

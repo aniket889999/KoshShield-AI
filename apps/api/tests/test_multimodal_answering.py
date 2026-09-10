@@ -31,6 +31,7 @@ from koshshield.services.retrieval.embeddings.deterministic_fake import (
 from koshshield.services.retrieval.llama_cpp_client import (
     LlamaCppIncapableError,
     LlamaCppMultimodalClient,
+    LlamaCppResponseInvalidError,
     LlamaCppSecurityError,
     LlamaCppUnavailableError,
 )
@@ -166,6 +167,13 @@ def test_contract_fixtures_accept_configured_runtime_and_vision_modality() -> No
     [
         "b4600",
         "b4600-abcdef",
+        "b108090-5266f240",  # Substring matches must fail
+        "b10809-v0.4.0",  # Version must NOT substitute for commit
+        {
+            "build": "b10809",
+            "commit": "deadbee",
+            "version": "v0.4.0",
+        },  # Wrong commit, matching version
         {"build": "b4600", "commit": "5266f24"},
         {"build": "b10809", "commit": "b4600"},
         {"build": "b9999", "commit": "wrong_commit"},
@@ -1244,16 +1252,48 @@ def test_privacy_safe_audit_logs_metadata_only(
         assert "answer" not in details
 
 
-def test_real_llama_cpp_integration_skips_truthfully_when_unavailable() -> None:
-    """Truthfully tests against local llama.cpp server if running, or skips truthfully."""
+def test_real_llama_cpp_integration_readiness_and_generation() -> None:
+    """Truthfully tests against local llama.cpp server: capability check and actual generation."""
+    import os
+
+    strict_integration = os.environ.get("KOSHSHIELD_STRICT_INTEGRATION") == "1"
     client = LlamaCppMultimodalClient(base_url="http://localhost:8080/v1")
     try:
         model_info = client.check_health_and_capability()
         assert model_info is not None
-    except (LlamaCppUnavailableError, LlamaCppIncapableError) as err:
-        pytest.skip(
-            f"Local llama.cpp server with Qwen3-VL is offline or incapable on localhost:8080: {err}"
+
+        # Test actual generation coverage
+        resp = client.generate_grounded_answer(
+            query="What is the system status?",
+            evidence_chunks=[
+                {
+                    "chunk_id": "chunk-test-1",
+                    "document_id": "doc-test-1",
+                    "page_number": 1,
+                    "masked_text": "System operational in local environment.",
+                }
+            ],
+            masked_images_data_urls=[],
         )
+        assert resp is not None
+        assert isinstance(resp.answer, str)
+        assert len(resp.answer) > 0
+    except LlamaCppIncapableError as err:
+        # A reachable but incompatible runtime is a failure, not "service absent"
+        pytest.fail(
+            f"Local llama.cpp server is reachable but incompatible with target contract: {err}"
+        )
+    except LlamaCppUnavailableError as err:
+        if strict_integration:
+            pytest.fail(
+                "Strict integration requires local llama.cpp server on localhost:8080 "
+                f"(NOT_EXECUTED): {err}"
+            )
+        else:
+            pytest.skip(
+                "Optional live integration test skipped: local llama.cpp server is offline "
+                f"on localhost:8080: {err}"
+            )
 
 
 _VALID_A = '{"answer": "A", "cited_chunk_ids": ["c1"], "insufficient_evidence": false}'
@@ -1431,3 +1471,133 @@ def test_no_outbound_network_download_or_hf_flags() -> None:
     # Verify client rejects non-loopback remote endpoints
     with pytest.raises(LlamaCppSecurityError):
         LlamaCppMultimodalClient(base_url="https://huggingface.co/models/v1")
+
+
+def test_completion_envelope_diagnostics_and_missing_usage() -> None:
+    client = LlamaCppMultimodalClient(
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
+    )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {"modalities": {"vision": True}, "build_info": "b10809-5266f24"}
+
+    # Valid envelope with optional diagnostics and no usage -> usage is None, NOT 0 tokens
+    valid_with_diagnostics = {
+        "id": "chatcmpl-123",
+        "object": "chat.completion",
+        "created": 1741500000,
+        "model": "qwen3-vl-4b-instruct",
+        "system_fingerprint": "fp_test_diagnostic",
+        "timings": {"prompt_n": 50, "prompt_per_second": 120.0},
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        '{"answer": "Verified facts.", "cited_chunk_ids": ["c1"], '
+                        '"insufficient_evidence": false}'
+                    ),
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        # usage omitted intentionally
+    }
+
+    with patch("httpx.Client") as mock_httpx:
+        mock_ctx = MagicMock()
+        mock_httpx.return_value.__enter__.return_value = mock_ctx
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            if "/chat/completions" in url:
+                return make_mock_stream_response(status_code=200, json_data=valid_with_diagnostics)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        out = client.generate_grounded_answer(
+            query="Test query",
+            evidence_chunks=[{"chunk_id": "c1", "masked_text": "text"}],
+            masked_images_data_urls=[],
+        )
+        assert out["answer"] == "Verified facts."
+        # Missing usage must be explicitly None, not 0
+        assert out["prompt_tokens"] is None
+        assert out["completion_tokens"] is None
+        assert out["total_tokens"] is None
+
+
+@pytest.mark.parametrize(
+    "invalid_envelope",
+    [
+        # Model mismatch
+        {
+            "model": "wrong-model-alias",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": _VALID_A,
+                    }
+                }
+            ],
+        },
+        # Wrong role (not assistant)
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "user",
+                        "content": _VALID_A,
+                    }
+                }
+            ],
+        },
+        # Unsupported finish reason
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": _VALID_A,
+                    },
+                    "finish_reason": "unsupported_reason",
+                }
+            ],
+        },
+    ],
+)
+def test_completion_envelope_rejects_model_mismatch_and_invalid_role(
+    invalid_envelope: Any,
+) -> None:
+    client = LlamaCppMultimodalClient(
+        base_url="http://localhost:8080/v1", model_id="qwen3-vl-4b-instruct"
+    )
+    models_payload = {"data": [{"id": "qwen3-vl-4b-instruct"}]}
+    props_payload = {"modalities": {"vision": True}, "build_info": "b10809-5266f24"}
+
+    with patch("httpx.Client") as mock_httpx:
+        mock_ctx = MagicMock()
+        mock_httpx.return_value.__enter__.return_value = mock_ctx
+
+        def mock_stream(method: str, url: str, **kwargs: Any) -> MagicMock:
+            if "/models" in url:
+                return make_mock_stream_response(status_code=200, json_data=models_payload)
+            if "/props" in url:
+                return make_mock_stream_response(status_code=200, json_data=props_payload)
+            if "/chat/completions" in url:
+                return make_mock_stream_response(status_code=200, json_data=invalid_envelope)
+            return make_mock_stream_response(status_code=404)
+
+        mock_ctx.stream.side_effect = mock_stream
+
+        with pytest.raises(LlamaCppResponseInvalidError):
+            client.generate_grounded_answer(
+                query="Test query",
+                evidence_chunks=[{"chunk_id": "c1", "masked_text": "text"}],
+                masked_images_data_urls=[],
+            )

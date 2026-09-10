@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key migrate
+.PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key migrate runtime-preflight smoke-local
 
 bootstrap:
 	/opt/anaconda3/bin/python3.12 -m venv .venv
@@ -34,3 +34,9 @@ lint:
 
 generate-key:
 	/opt/anaconda3/bin/python3.12 scripts/generate_master_key.py
+
+runtime-preflight:
+	.venv/bin/python -m koshshield.runtime_preflight
+
+smoke-local:
+	.venv/bin/python -m koshshield.smoke

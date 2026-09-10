@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     llama_cpp_service_name: str = "llama-server"
     llama_cpp_max_tokens: int = Field(default=512, ge=64, le=2048)
     llama_cpp_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+    llama_cpp_model_path: Path | None = None
+    llama_cpp_mmproj_path: Path | None = None
 
     @field_validator("qdrant_url", "llama_base_url")
     @classmethod

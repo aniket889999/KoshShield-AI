@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "case_id": "PROC-001",
+  "synthetic": true,
+  "purpose": "Known-answer smoke fixture; not a held-out benchmark or a production accuracy claim",
+  "input_variants": ["proc001-native.pdf", "proc001-scanned.pdf"],
+  "isolate_variants": true,
+  "expected_pages": 2,
+  "pii": [
+    {"type": "PAN", "value": "TESTP0000A", "page": 1},
+    {"type": "PHONE", "value": "9000000000", "page": 1},
+    {"type": "EMAIL", "value": "proc001@example.invalid", "page": 1}
+  ],
+  "questions": [
+    {
+      "id": "Q1",
+      "query": "What minimum flow does this tender require? Include the unit.",
+      "required_evidence_pages": [1],
+      "required_facts": [{"field": "minimum_flow", "value": 80, "unit": "m3/h"}],
+      "insufficient_evidence": false
+    },
+    {
+      "id": "Q2",
+      "query": "Which requirements does Supplier B fail, and what values did it propose?",
+      "required_evidence_pages": [1, 2],
+      "required_facts": [
+        {"field": "flow", "proposed": 75, "required_minimum": 80, "unit": "m3/h"},
+        {"field": "warranty", "proposed": 12, "required_minimum": 24, "unit": "months"}
+      ],
+      "insufficient_evidence": false
+    },
+    {
+      "id": "Q3",
+      "query": "What delivery time did Supplier C promise?",
+      "required_evidence_pages": [2],
+      "required_facts": [{"field": "delivery", "value": null, "reason": "Not provided"}],
+      "insufficient_evidence": true
+    },
+    {
+      "id": "Q4",
+      "query": "Read the proposal table: what pressure is listed for Supplier C?",
+      "required_evidence_pages": [2],
+      "required_facts": [{"field": "pressure", "value": 13, "unit": "bar"}],
+      "insufficient_evidence": false,
+      "visual_probe": true
+    },
+    {
+      "id": "Q5",
+      "query": "What purchase price did Supplier A quote?",
+      "required_evidence_pages": [2],
+      "required_facts": [{"field": "price", "value": null, "reason": "No prices supplied"}],
+      "insufficient_evidence": true
+    }
+  ],
+  "comparison_expected": {
+    "Supplier A": {"R1": "SUPPORTED", "R2": "SUPPORTED", "R3": "SUPPORTED", "R4": "SUPPORTED"},
+    "Supplier B": {"R1": "CONTRADICTED", "R2": "SUPPORTED", "R3": "SUPPORTED", "R4": "CONTRADICTED"},
+    "Supplier C": {"R1": "SUPPORTED", "R2": "SUPPORTED", "R3": "MISSING", "R4": "SUPPORTED"}
+  },
+  "measurement_expected": [
+    {"equipment_id": "P-101", "failed_requirements": ["R1"]},
+    {"equipment_id": "P-102", "failed_requirements": ["R2"]},
+    {"equipment_id": "P-103", "failed_requirements": []}
+  ],
+  "grading_notes": [
+    "Grade supported facts and units, not exact answer strings.",
+    "Citation presence alone is insufficient; check its document and page and the supporting content.",
+    "If an answer does not claim the requested fact is known, its wording can vary.",
+    "Synthetic PII must not occur in masked index text, model context, answers, audit logs or released images.",
+    "For visual verification, require an actual authorized image in the model request; OCR text alone does not prove vision-model use.",
+    "Only input PDFs are ingested; never supply this answer key or fixture source to a model."
+  ]
+}
