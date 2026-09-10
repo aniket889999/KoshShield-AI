@@ -1,4 +1,4 @@
-.PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key migrate runtime-preflight smoke-local
+.PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key migrate runtime-preflight smoke-local provision-runtime
 
 bootstrap:
 	/opt/anaconda3/bin/python3.12 -m venv .venv
@@ -40,3 +40,6 @@ runtime-preflight:
 
 smoke-local:
 	.venv/bin/python -m koshshield.smoke
+
+provision-runtime:
+	.venv/bin/python scripts/provision_local_runtime.py --dry-run

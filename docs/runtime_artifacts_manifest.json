@@ -1,0 +1,84 @@
+{
+  "manifest_version": 1,
+  "description": "Authoritative local artifact manifest for KoshShield AI air-gapped multimodal runtime",
+  "hardware_profile": {
+    "tested_architecture": "darwin-arm64",
+    "recommended_physical_cores": 8,
+    "recommended_ram_gb": 16,
+    "available_disk_gb_required": 9.0
+  },
+  "artifacts": [
+    {
+      "id": "bge-m3",
+      "category": "embedding",
+      "official_source": "https://huggingface.co/BAAI/bge-m3",
+      "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+      "license": "Apache-2.0",
+      "estimated_size_bytes": 2240000000,
+      "estimated_size_human": "~2.24 GB",
+      "target_dir": "data/models/bge-m3",
+      "required_files": [
+        "config.json",
+        "model.safetensors",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json"
+      ]
+    },
+    {
+      "id": "qwen3-vl-4b-gguf",
+      "category": "multimodal_llm",
+      "official_source": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
+      "license": "Apache-2.0",
+      "estimated_size_bytes": 3480000000,
+      "estimated_size_human": "~3.48 GB",
+      "target_dir": "data/models/qwen3-vl",
+      "model_file": "Qwen3-VL-4B-Instruct-Q4_K_M.gguf",
+      "mmproj_file": "mmproj-Qwen3-VL-4B-Instruct-f16.gguf",
+      "pinned_runtime_contract": {
+        "release": "v0.4.0",
+        "build": "b10809",
+        "commit": "5266f24",
+        "model_alias": "qwen3-vl-4b-instruct"
+      }
+    },
+    {
+      "id": "paddleocr-v4-en",
+      "category": "ocr",
+      "official_source": "https://github.com/PaddlePaddle/PaddleOCR",
+      "license": "Apache-2.0",
+      "estimated_size_bytes": 15000000,
+      "estimated_size_human": "~15 MB",
+      "detection": {
+        "source_archive": "https://paddleocr.bj.bcebos.com/PP-OCRv4/english/en_PP-OCRv4_det_infer.tar",
+        "target_dir": "data/models/paddleocr/det"
+      },
+      "recognition": {
+        "source_archive": "https://paddleocr.bj.bcebos.com/PP-OCRv4/english/en_PP-OCRv4_rec_infer.tar",
+        "target_dir": "data/models/paddleocr/rec"
+      }
+    },
+    {
+      "id": "llama-server",
+      "category": "inference_server",
+      "official_source": "https://github.com/ggerganov/llama.cpp",
+      "license": "MIT",
+      "pinned_release": "v0.4.0",
+      "pinned_build": "b10809",
+      "pinned_commit": "5266f24",
+      "estimated_size_bytes": 55000000,
+      "estimated_size_human": "~55 MB",
+      "target_binary": "llama-server"
+    },
+    {
+      "id": "qdrant",
+      "category": "vector_store",
+      "official_source": "https://github.com/qdrant/qdrant",
+      "license": "Apache-2.0",
+      "pinned_version": "v1.12.1",
+      "estimated_size_bytes": 100000000,
+      "estimated_size_human": "~100 MB",
+      "default_url": "http://localhost:6333"
+    }
+  ]
+}

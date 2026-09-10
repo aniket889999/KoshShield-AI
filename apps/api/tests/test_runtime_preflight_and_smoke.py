@@ -78,10 +78,16 @@ def test_smoke_harness_honest_execution_and_clean_pii() -> None:
     assert report.report_type == "smoke_local"
     assert report.synthetic_fixture == "PROC-001"
     assert "disclaimer" in report.__dict__
-    assert report.real_provider_flags["bge_m3_real"] is True
-    assert report.real_provider_flags["qdrant_real"] is True
-    assert report.real_provider_flags["ocr_real"] is True
-    assert report.real_provider_flags["llama_cpp_real"] is True
+    assert report.real_providers_configured["bge_m3"] is True
+    assert report.real_providers_configured["qdrant"] is True
+    assert report.real_providers_configured["ocr"] is True
+    assert report.real_providers_configured["llama_cpp"] is True
+
+    # When services are missing, executed flags must all be False
+    assert report.real_providers_executed["bge_m3"] is False
+    assert report.real_providers_executed["qdrant"] is False
+    assert report.real_providers_executed["ocr"] is False
+    assert report.real_providers_executed["llama_cpp"] is False
 
     # Both variants must have run independently
     assert "proc001-native.pdf" in report.variants
@@ -90,18 +96,42 @@ def test_smoke_harness_honest_execution_and_clean_pii() -> None:
     native_rep = report.variants["proc001-native.pdf"]
     scanned_rep = report.variants["proc001-scanned.pdf"]
 
-    # Native PDF must have executed vault ingestion, extraction, review, and redaction
+    # Native PDF must have executed vault ingestion, extraction, and masking
     assert native_rep["stages"]["vault_ingestion"]["status"] == "PASSED"
     assert native_rep["stages"]["extraction"]["status"] == "PASSED"
     assert native_rep["stages"]["pii_review"]["status"] == "PASSED"
-    assert native_rep["stages"]["redaction_and_visual_privacy"]["status"] == "PASSED"
+    assert native_rep["stages"]["masked_text_verification"]["status"] == "PASSED"
     assert native_rep["synthetic_pii_clean"] is True
 
-    # Scanned PDF without real OCR should cleanly record NOT_EXECUTED for extraction
+    # Missing OCR must NOT produce a passing visual privacy verification
+    assert native_rep["stages"]["visual_derivative_verification"]["status"] == "NOT_EXECUTED"
+    assert (
+        native_rep["stages"]["visual_derivative_verification"]["failure_code"] == "OCR_UNAVAILABLE"
+    )
+
+    # Scanned PDF without real OCR should record NOT_EXECUTED for extraction
     assert scanned_rep["stages"]["vault_ingestion"]["status"] == "PASSED"
-    assert scanned_rep["stages"]["extraction"]["status"] in {"PASSED", "NOT_EXECUTED"}
-    if scanned_rep["stages"]["extraction"]["status"] == "NOT_EXECUTED":
-        assert scanned_rep["stages"]["extraction"]["failure_code"] == "OCR_UNAVAILABLE"
+    assert scanned_rep["stages"]["extraction"]["status"] == "NOT_EXECUTED"
+    assert scanned_rep["stages"]["extraction"]["failure_code"] == "OCR_UNAVAILABLE"
+    # When extraction did not execute, synthetic_pii_clean must be None (not checked)
+    assert scanned_rep["synthetic_pii_clean"] is None
+
+
+def test_smoke_harness_distinguishes_configured_from_executed() -> None:
+    report = run_smoke()
+    # Configured providers indicate real production classes were used
+    assert all(report.real_providers_configured.values())
+    # But unexecuted providers must never be marked executed
+    assert not any(report.real_providers_executed.values())
+
+
+def test_smoke_harness_missing_ocr_fails_closed_on_visual_privacy() -> None:
+    report = run_smoke()
+    native_stages = report.variants["proc001-native.pdf"]["stages"]
+    # Even though text redaction passed, visual derivative must NOT pass without real OCR
+    assert native_stages["masked_text_verification"]["status"] == "PASSED"
+    assert native_stages["visual_derivative_verification"]["status"] == "NOT_EXECUTED"
+    assert native_stages["visual_derivative_verification"]["failure_code"] == "OCR_UNAVAILABLE"
 
 
 def test_strict_integration_fails_truthfully_when_server_offline(

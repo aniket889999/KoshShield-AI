@@ -3,9 +3,12 @@
 Guarantees:
 - Uses fresh namespaced scratch DB/vault/Qdrant resources with explicit ownership.
 - Never touches or deletes shared collections or developer database.
-- Uses real production adapters with real provider flags (no mock OCR or fake embeddings).
+- Uses real production adapters with separate configured and executed provider tracking.
 - Independent runs for native PDF and scanned PDF (never co-indexed).
 - Distinguishes PASSED, FAILED, and NOT_EXECUTED with stable failure codes.
+- Separates masked text verification from visual derivative privacy verification.
+- synthetic_pii_clean is null until verification checks execute.
+- Missing OCR engine marks visual derivative verification as NOT_EXECUTED, never PASSED.
 - Verifies absence of synthetic PII from masked text, audit logs, and outputs.
 - Never outputs raw confidential text, prompt templates, or local paths.
 - Returns nonzero exit code whenever a required stage is failed or not executed.
@@ -22,7 +25,7 @@ import shutil
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -95,7 +98,8 @@ class VariantRunReport:
     failure_code: str | None
     stages: dict[str, dict[str, Any]]
     question_checks: dict[str, dict[str, Any]]
-    synthetic_pii_clean: bool
+    synthetic_pii_clean: bool | None
+    executed_providers: dict[str, bool] = field(default_factory=dict)
     details: str | None = None
 
 
@@ -107,6 +111,8 @@ class SmokeReport:
     timestamp: str
     synthetic_fixture: str
     model_identifiers: dict[str, str]
+    real_providers_configured: dict[str, bool]
+    real_providers_executed: dict[str, bool]
     real_provider_flags: dict[str, bool]
     variants: dict[str, dict[str, Any]]
     summary: dict[str, int]
@@ -117,6 +123,18 @@ FORBIDDEN_SYNTHETIC_PII = [
     "TESTP0000A",
     "9000000000",
     "proc001@example.invalid",
+]
+
+ALL_STAGES_IN_ORDER = [
+    "vault_ingestion",
+    "extraction",
+    "pii_review",
+    "masked_text_verification",
+    "visual_derivative_verification",
+    "embedding_and_indexing",
+    "retrieval",
+    "grounded_answering",
+    "answer_validation",
 ]
 
 
@@ -176,7 +194,13 @@ def run_single_variant(
             failure_code="FIXTURE_INPUT_MISSING",
             stages={},
             question_checks={},
-            synthetic_pii_clean=True,
+            synthetic_pii_clean=None,
+            executed_providers={
+                "bge_m3": False,
+                "qdrant": False,
+                "ocr": False,
+                "llama_cpp": False,
+            },
             details=f"Fixture file '{variant_name}' not found",
         )
 
@@ -187,7 +211,13 @@ def run_single_variant(
     stages: dict[str, StageResult] = {}
     question_checks: dict[str, QuestionCheckResult] = {}
     created_qdrant_collection: str | None = None
-    synthetic_pii_clean = True
+    synthetic_pii_clean: bool | None = None
+    executed_providers: dict[str, bool] = {
+        "bge_m3": False,
+        "qdrant": False,
+        "ocr": False,
+        "llama_cpp": False,
+    }
 
     try:
         # 1. Setup isolated database and vault
@@ -258,8 +288,13 @@ def run_single_variant(
                     failure_code="VAULT_INGESTION_FAILED",
                     details=err.__class__.__name__,
                 )
+                _mark_remaining_stages_not_executed(stages, "VAULT_INGESTION_FAILED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             # -----------------------------------------------------------------
@@ -267,7 +302,7 @@ def run_single_variant(
             # -----------------------------------------------------------------
             t0 = time.perf_counter()
             try:
-                start_document_extraction(
+                job = start_document_extraction(
                     session=session,
                     document_id=doc.id,
                     actor_id=actor_id,
@@ -275,6 +310,8 @@ def run_single_variant(
                     vault=scratch_vault,
                     tenant_id=tenant_id,
                 )
+                if getattr(job, "extraction_method", "") == "paddleocr":
+                    executed_providers["ocr"] = True
                 stages["extraction"] = StageResult(
                     status=StageStatus.PASSED,
                     duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
@@ -287,7 +324,11 @@ def run_single_variant(
                 )
                 _mark_remaining_stages_not_executed(stages, "PREREQUISITE_EXTRACTION_NOT_EXECUTED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
             except Exception as err:
                 stages["extraction"] = StageResult(
@@ -298,7 +339,11 @@ def run_single_variant(
                 )
                 _mark_remaining_stages_not_executed(stages, "EXTRACTION_FAILED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             # -----------------------------------------------------------------
@@ -338,11 +383,15 @@ def run_single_variant(
                 )
                 _mark_remaining_stages_not_executed(stages, "PII_REVIEW_FAILED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             # -----------------------------------------------------------------
-            # Stage 4: Redaction and Visual Privacy Gate
+            # Stage 4: Masked Text Verification
             # -----------------------------------------------------------------
             t0 = time.perf_counter()
             try:
@@ -358,37 +407,128 @@ def run_single_variant(
                     DocumentState.REDACTION_APPROVED,
                     DocumentState.INDEX_READY,
                 }
-                stages["redaction_and_visual_privacy"] = StageResult(
+
+                # Verify masked text exists for each page
+                pages = list(
+                    session.scalars(
+                        select(DocumentPageRecord)
+                        .where(DocumentPageRecord.document_id == doc.id)
+                        .order_by(DocumentPageRecord.page_number.asc())
+                    )
+                )
+                for p in pages:
+                    assert p.masked_text is not None, f"Page {p.page_number} missing masked text"
+
+                # Check for PII leakage in masked text and audit records
+                synthetic_pii_clean = _check_pii_leakage(session)
+                if not synthetic_pii_clean:
+                    stages["masked_text_verification"] = StageResult(
+                        status=StageStatus.FAILED,
+                        duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                        failure_code="SYNTHETIC_PII_LEAKAGE_DETECTED",
+                        details="Forbidden synthetic PII detected in masked text or audit records",
+                    )
+                    _mark_remaining_stages_not_executed(stages, "PII_LEAKAGE")
+                    return _compile_variant_report(
+                        variant_name,
+                        stages,
+                        question_checks,
+                        synthetic_pii_clean,
+                        executed_providers,
+                    )
+
+                stages["masked_text_verification"] = StageResult(
                     status=StageStatus.PASSED,
                     duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
                 )
             except Exception as err:
-                stages["redaction_and_visual_privacy"] = StageResult(
+                stages["masked_text_verification"] = StageResult(
                     status=StageStatus.FAILED,
                     duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
-                    failure_code="REDACTION_APPROVAL_FAILED",
+                    failure_code="MASKED_TEXT_VERIFICATION_FAILED",
                     details=err.__class__.__name__,
                 )
-                _mark_remaining_stages_not_executed(stages, "REDACTION_APPROVAL_FAILED")
+                _mark_remaining_stages_not_executed(stages, "MASKED_TEXT_VERIFICATION_FAILED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
-                )
-
-            # Check for PII leakage after redaction
-            synthetic_pii_clean = _check_pii_leakage(session)
-            if not synthetic_pii_clean:
-                stages["redaction_and_visual_privacy"] = StageResult(
-                    status=StageStatus.FAILED,
-                    failure_code="SYNTHETIC_PII_LEAKAGE_DETECTED",
-                    details="Forbidden synthetic PII detected in masked text or audit records",
-                )
-                _mark_remaining_stages_not_executed(stages, "PII_LEAKAGE")
-                return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             # -----------------------------------------------------------------
-            # Stage 5: BGE-M3 Embedding and Qdrant Indexing
+            # Stage 5: Visual Derivative Privacy Verification
+            # -----------------------------------------------------------------
+            t0 = time.perf_counter()
+            try:
+                pages = list(
+                    session.scalars(
+                        select(DocumentPageRecord)
+                        .where(DocumentPageRecord.document_id == doc.id)
+                        .order_by(DocumentPageRecord.page_number.asc())
+                    )
+                )
+                visual_pages = [p for p in pages if p.encrypted_page_image_path]
+                if not visual_pages:
+                    stages["visual_derivative_verification"] = StageResult(
+                        status=StageStatus.PASSED,
+                        duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                        details="NOT_APPLICABLE: No visual pages in document",
+                    )
+                else:
+                    all_visual_approved = True
+                    has_blocked_ocr = False
+                    blocked_reason: str | None = None
+
+                    for vp in visual_pages:
+                        st = vp.visual_privacy_status
+                        if st == "APPROVED":
+                            executed_providers["ocr"] = True
+                        elif st == "BLOCKED_OCR_UNAVAILABLE":
+                            has_blocked_ocr = True
+                            all_visual_approved = False
+                            blocked_reason = "OCR_UNAVAILABLE"
+                        else:
+                            all_visual_approved = False
+                            blocked_reason = st or "VISUAL_PRIVACY_BLOCKED"
+
+                    if all_visual_approved:
+                        stages["visual_derivative_verification"] = StageResult(
+                            status=StageStatus.PASSED,
+                            duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                            details=f"Verified {len(visual_pages)} visual derivative(s) with OCR",
+                        )
+                    elif has_blocked_ocr:
+                        # Missing OCR must NOT produce a passing visual privacy verification
+                        stages["visual_derivative_verification"] = StageResult(
+                            status=StageStatus.NOT_EXECUTED,
+                            duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                            failure_code="OCR_UNAVAILABLE",
+                            details=(
+                                "Visual derivative could not be verified because OCR "
+                                "engine is unavailable"
+                            ),
+                        )
+                    else:
+                        stages["visual_derivative_verification"] = StageResult(
+                            status=StageStatus.FAILED,
+                            duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                            failure_code=blocked_reason or "VISUAL_VERIFICATION_FAILED",
+                            details=(
+                                f"Visual derivative failed privacy verification: {blocked_reason}"
+                            ),
+                        )
+            except Exception as err:
+                stages["visual_derivative_verification"] = StageResult(
+                    status=StageStatus.FAILED,
+                    duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                    failure_code="VISUAL_VERIFICATION_ERROR",
+                    details=err.__class__.__name__,
+                )
+
+            # -----------------------------------------------------------------
+            # Stage 6: BGE-M3 Embedding and Qdrant Indexing
             # -----------------------------------------------------------------
             t0 = time.perf_counter()
             bge_ready, bge_reason = real_bge_m3.is_available()
@@ -402,7 +542,11 @@ def run_single_variant(
                 )
                 _mark_remaining_stages_not_executed(stages, "INDEXING_NOT_EXECUTED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             if not qdrant_ready:
@@ -413,7 +557,11 @@ def run_single_variant(
                 )
                 _mark_remaining_stages_not_executed(stages, "INDEXING_NOT_EXECUTED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             try:
@@ -431,6 +579,8 @@ def run_single_variant(
                     actor_id=actor_id,
                     tenant_id=tenant_id,
                 )
+                executed_providers["bge_m3"] = True
+                executed_providers["qdrant"] = True
                 stages["embedding_and_indexing"] = StageResult(
                     status=StageStatus.PASSED,
                     duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
@@ -445,11 +595,15 @@ def run_single_variant(
                 )
                 _mark_remaining_stages_not_executed(stages, "INDEXING_FAILED")
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             # -----------------------------------------------------------------
-            # Stage 6: Retrieval
+            # Stage 7: Retrieval
             # -----------------------------------------------------------------
             t0 = time.perf_counter()
             retrieval_service = HybridRetrievalService(
@@ -491,11 +645,15 @@ def run_single_variant(
                     status=StageStatus.NOT_EXECUTED, failure_code="RETRIEVAL_FAILED"
                 )
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             # -----------------------------------------------------------------
-            # Stage 7 & 8: Grounded Answering and Question-Level Validation
+            # Stage 8 & 9: Grounded Answering and Question-Level Validation
             # -----------------------------------------------------------------
             try:
                 real_llama_client.check_health_and_capability()
@@ -510,11 +668,15 @@ def run_single_variant(
                     failure_code="LLAMA_CPP_UNAVAILABLE",
                 )
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
             except Exception as err:
                 stages["grounded_answering"] = StageResult(
-                    status=StageStatus.NOT_EXECUTED,
+                    status=StageStatus.FAILED,
                     failure_code="LLAMA_CPP_CONTRACT_MISMATCH",
                     details=err.__class__.__name__,
                 )
@@ -523,7 +685,11 @@ def run_single_variant(
                     failure_code="LLAMA_CPP_CONTRACT_MISMATCH",
                 )
                 return _compile_variant_report(
-                    variant_name, stages, question_checks, synthetic_pii_clean
+                    variant_name,
+                    stages,
+                    question_checks,
+                    synthetic_pii_clean,
+                    executed_providers,
                 )
 
             # Execute real answering if llama.cpp is available
@@ -573,6 +739,7 @@ def run_single_variant(
                         evidence_chunks=evidence_chunks,
                         masked_images_data_urls=images_data_urls,
                     )
+                    executed_providers["llama_cpp"] = True
 
                     # Validate question checks against ground truth
                     # 1. Evidence pages
@@ -605,7 +772,10 @@ def run_single_variant(
                             synthetic_pii_clean = False
 
                     q_passed = (
-                        pages_match and insufficient_match and facts_match and synthetic_pii_clean
+                        pages_match
+                        and insufficient_match
+                        and facts_match
+                        and (synthetic_pii_clean is True)
                     )
                     if not q_passed:
                         all_questions_passed = False
@@ -638,7 +808,11 @@ def run_single_variant(
                 )
 
             return _compile_variant_report(
-                variant_name, stages, question_checks, synthetic_pii_clean
+                variant_name,
+                stages,
+                question_checks,
+                synthetic_pii_clean,
+                executed_providers,
             )
 
     finally:
@@ -650,15 +824,7 @@ def run_single_variant(
 
 
 def _mark_remaining_stages_not_executed(stages: dict[str, StageResult], failure_code: str) -> None:
-    remaining = [
-        "pii_review",
-        "redaction_and_visual_privacy",
-        "embedding_and_indexing",
-        "retrieval",
-        "grounded_answering",
-        "answer_validation",
-    ]
-    for r in remaining:
+    for r in ALL_STAGES_IN_ORDER:
         if r not in stages:
             stages[r] = StageResult(status=StageStatus.NOT_EXECUTED, failure_code=failure_code)
 
@@ -667,7 +833,8 @@ def _compile_variant_report(
     variant_name: str,
     stages: dict[str, StageResult],
     question_checks: dict[str, QuestionCheckResult],
-    synthetic_pii_clean: bool,
+    synthetic_pii_clean: bool | None,
+    executed_providers: dict[str, bool] | None = None,
 ) -> VariantRunReport:
     # Check if any stage failed or was not executed
     has_failed = any(s.status == StageStatus.FAILED for s in stages.values())
@@ -712,6 +879,8 @@ def _compile_variant_report(
         stages=stages_dict,
         question_checks=q_dict,
         synthetic_pii_clean=synthetic_pii_clean,
+        executed_providers=executed_providers
+        or {"bge_m3": False, "qdrant": False, "ocr": False, "llama_cpp": False},
     )
 
 
@@ -723,7 +892,13 @@ def run_smoke(settings: Settings | None = None) -> SmokeReport:
         (fixture_dir / "expected" / "proc001-ground-truth.json").read_text(encoding="utf-8")
     )
 
-    # Real provider flags (verifying no mock/fake provider used)
+    real_providers_configured = {
+        "bge_m3": True,
+        "qdrant": True,
+        "ocr": True,
+        "llama_cpp": True,
+    }
+
     real_provider_flags = {
         "bge_m3_real": True,
         "qdrant_real": True,
@@ -748,6 +923,13 @@ def run_smoke(settings: Settings | None = None) -> SmokeReport:
     failed_stages = 0
     not_executed_stages = 0
 
+    executed_summary = {
+        "bge_m3": False,
+        "qdrant": False,
+        "ocr": False,
+        "llama_cpp": False,
+    }
+
     for variant in variants:
         v_rep = run_single_variant(
             variant_name=variant,
@@ -756,6 +938,10 @@ def run_smoke(settings: Settings | None = None) -> SmokeReport:
             settings=cfg,
         )
         variant_reports[variant] = asdict(v_rep)
+
+        for prov, val in v_rep.executed_providers.items():
+            if val:
+                executed_summary[prov] = True
 
         for s_data in v_rep.stages.values():
             total_stages += 1
@@ -783,6 +969,8 @@ def run_smoke(settings: Settings | None = None) -> SmokeReport:
         timestamp=datetime.now(UTC).isoformat(),
         synthetic_fixture=ground_truth.get("case_id", "PROC-001"),
         model_identifiers=model_identifiers,
+        real_providers_configured=real_providers_configured,
+        real_providers_executed=executed_summary,
         real_provider_flags=real_provider_flags,
         variants=variant_reports,
         summary={
