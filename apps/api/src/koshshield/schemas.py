@@ -180,6 +180,18 @@ class RetrievalStatusResponse(BaseModel):
     indexed_documents_count: int
 
 
+class CleanupPendingRequest(BaseModel):
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class CleanupPendingResponse(BaseModel):
+    tenant_id: str
+    processed_count: int
+    succeeded_count: int
+    failed_count: int
+    failure_codes: list[str] = Field(default_factory=list)
+
+
 class AgentActionRequest(BaseModel):
     tool_name: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
     classification: Literal["INTERNAL", "CONFIDENTIAL", "RESTRICTED"] = "CONFIDENTIAL"

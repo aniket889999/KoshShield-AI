@@ -56,6 +56,24 @@
   - Complete rejection of unmanaged partial databases, missing tables, missing columns, unexpected columns, incompatible constraints, and schema drift.
   - Fail-safe startup and migration validation verifying both Alembic revision and actual physical schema layout without modifying database or creating alembic_version on validation failure.
   - Reused validator across `bootstrap_and_upgrade`, direct Alembic execution (`env.py`), and application startup (`check_schema_at_head`).
+- **Checkpoint 2: Active-Index Retrieval & Embedding Runtime Hardening (Completed)**:
+  - Strict document-level `active_index_version` filtering during vector search and point retrieval, ensuring stale vector points are never retrieved.
+  - Multi-threaded singleton embedding provider initialization protecting local model instances.
+  - Fail-closed validation for sparse and dense BGE-M3 representations, rejecting non-integer token keys.
+  - Verifiable idempotent same-version reindexing no-op preserving active chunks and vector points.
+  - Fail-closed Qdrant telemetry and count tracking.
+- **Checkpoint 2.1: Retrieval Lifecycle and Sanitization Closure (Completed)**:
+  - Universal error sanitization across retrieval and health routes, preventing leakage of internal filesystem paths, Qdrant URLs, vault keys, queries, and raw exception messages.
+  - Irreversible database activation transaction boundary (`DOCUMENT_INDEXED`) guaranteeing active generation points are protected from deletion or rollback.
+  - Tenant-isolated point operations in Qdrant adapter using compound `HasIdCondition` + `FieldCondition` filters batched safely in 256-point chunks with defensive payload validation.
+  - Strict payload-index schema validation verifying index presence and schema data types.
+  - Clarified vector store / indexing service contracts establishing authoritative active-version ownership in the indexing service.
+- **Checkpoint 2.2: Crash-Recoverable Deferred Index Cleanup (Completed)**:
+  - Crash-safe cleanup marker persistence: atomically commits `index_cleanup_pending=True` alongside the active generation during reindexing.
+  - Safe post-activation finalization: deletes stale generations and clears marker in a separate commit; failures preserve `index_cleanup_pending=True` without affecting active searchability.
+  - Tenant-scoped reconciliation service (`reconcile_pending_cleanups`) re-reading authoritative active versions, safely skipping invalid records, and isolating per-document failures.
+  - Admin-protected operational endpoint (`POST /api/v1/retrieval/cleanup-pending`) enforcing admin RBAC, production authentication barriers, tenant isolation, and bounded limits.
+  - Sanitized `INDEX_CLEANUP_COMPLETED` and `INDEX_CLEANUP_FAILED` audit logging storing only tenant ID, document ID, active version, and stable failure codes.
 
 ## Milestone 4: multimodal retrieval (prototype - security hardening in progress)
 

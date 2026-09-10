@@ -40,6 +40,15 @@ class IndexingResult:
     completed_at: str
 
 
+@dataclass
+class CleanupReconciliationResult:
+    tenant_id: str
+    processed_count: int
+    succeeded_count: int
+    failed_count: int
+    failure_codes: list[str]
+
+
 class DocumentIndexingService:
     """Orchestrates secure, failure-safe local indexing of privacy-approved documents into Qdrant.
 
@@ -324,7 +333,12 @@ class DocumentIndexingService:
             )
             session.add_all(db_chunk_records)
             doc.active_index_version = target_version
-            doc.index_cleanup_pending = False
+            has_older_generation = (
+                previous_active_version is not None and previous_active_version != target_version
+            )
+            # Atomically commit index_cleanup_pending=True during reindex activation
+            # For a genuine first index with no older generation, pending may remain False.
+            doc.index_cleanup_pending = bool(has_older_generation)
             validate_transition(doc.status, DocumentState.INDEXED)
             doc.status = DocumentState.INDEXED
 
@@ -361,24 +375,67 @@ class DocumentIndexingService:
                         tenant_id=doc_tenant_id,
                         active_version=auth_active_v,
                     )
+                    # Clear index_cleanup_pending only after successful stale deletion
+                    if has_older_generation:
+                        try:
+                            auth_doc = session.scalar(
+                                select(DocumentRecord).where(DocumentRecord.id == doc.id)
+                            )
+                            if auth_doc and auth_doc.index_cleanup_pending:
+                                auth_doc.index_cleanup_pending = False
+                                record_audit_event(
+                                    session=session,
+                                    tenant_id=doc_tenant_id,
+                                    actor_id=actor_id,
+                                    event_type="INDEX_CLEANUP_COMPLETED",
+                                    resource_type="document",
+                                    resource_id=doc.id,
+                                    details={
+                                        "tenant_id": doc_tenant_id,
+                                        "document_id": doc.id,
+                                        "active_index_version": auth_active_v,
+                                    },
+                                )
+                                session.commit()
+                                session.refresh(auth_doc)
+                        except Exception as clear_err:
+                            logger.warning(
+                                "Cleanup-marker clear persistence failed for doc '%s': %s",
+                                doc.id,
+                                clear_err,
+                            )
+                            session.rollback()
             except Exception as stale_err:
                 logger.warning(
-                    "Stale chunk deletion failed for doc '%s': %s. Marking cleanup pending.",
+                    "Stale chunk deletion failed for doc '%s': %s. "
+                    "Durable cleanup-pending marker remains True.",
                     doc.id,
                     stale_err,
                 )
+                code = (
+                    "VECTOR_STORE_ERROR"
+                    if isinstance(stale_err, VectorStoreError)
+                    else "CLEANUP_FAILED"
+                )
                 try:
-                    auth_doc = session.scalar(
-                        select(DocumentRecord).where(DocumentRecord.id == doc.id)
+                    record_audit_event(
+                        session=session,
+                        tenant_id=doc_tenant_id,
+                        actor_id=actor_id,
+                        event_type="INDEX_CLEANUP_FAILED",
+                        resource_type="document",
+                        resource_id=doc.id,
+                        details={
+                            "tenant_id": doc_tenant_id,
+                            "document_id": doc.id,
+                            "active_index_version": auth_active_v,
+                            "failure_code": code,
+                        },
                     )
-                    if auth_doc:
-                        auth_doc.index_cleanup_pending = True
-                        session.commit()
-                except Exception as flag_err:
+                    session.commit()
+                except Exception as audit_err:
                     logger.warning(
-                        "Cleanup-marker persistence failed for doc '%s': %s",
-                        doc.id,
-                        flag_err,
+                        "Failed to record failure audit for doc '%s': %s", doc.id, audit_err
                     )
                     session.rollback()
 
@@ -556,3 +613,147 @@ class DocumentIndexingService:
         if not captions:
             return masked_text
         return f"{masked_text}\n\nVisual captions:\n" + "\n".join(captions)
+
+    def reconcile_pending_cleanups(
+        self,
+        session: Session,
+        tenant_id: str,
+        limit: int = 50,
+        actor_id: str = "system",
+    ) -> CleanupReconciliationResult:
+        """Processes pending index cleanup records for a tenant with bounded limit.
+
+        - Re-reads each document's authoritative active_index_version immediately before deletion.
+        - Skips records without an active version and records a sanitized failure code.
+        - Deletes only generations older than the authoritative active_index_version.
+        - Clears the marker only after successful stale deletion.
+        - One document failure does not prevent processing other pending documents.
+        """
+        if not tenant_id or not tenant_id.strip():
+            raise ValueError("tenant_id is required")
+
+        bounded_limit = max(1, min(limit, 100))
+
+        stmt = (
+            select(DocumentRecord.id)
+            .where(
+                DocumentRecord.tenant_id == tenant_id,
+                DocumentRecord.index_cleanup_pending.is_(True),
+            )
+            .order_by(DocumentRecord.updated_at.asc())
+            .limit(bounded_limit)
+        )
+        doc_ids = list(session.scalars(stmt))
+
+        processed_count = 0
+        succeeded_count = 0
+        failed_count = 0
+        failure_codes: list[str] = []
+
+        for doc_id in doc_ids:
+            processed_count += 1
+            auth_active_v: int | None = None
+            try:
+                doc = session.scalar(
+                    select(DocumentRecord).where(
+                        DocumentRecord.id == doc_id,
+                        DocumentRecord.tenant_id == tenant_id,
+                    )
+                )
+                if not doc:
+                    failed_count += 1
+                    failure_codes.append("DOCUMENT_NOT_FOUND")
+                    continue
+
+                auth_active_v = doc.active_index_version
+                if auth_active_v is None:
+                    failed_count += 1
+                    code = "NO_ACTIVE_VERSION"
+                    failure_codes.append(code)
+                    try:
+                        record_audit_event(
+                            session=session,
+                            tenant_id=tenant_id,
+                            actor_id=actor_id,
+                            event_type="INDEX_CLEANUP_FAILED",
+                            resource_type="document",
+                            resource_id=doc.id,
+                            details={
+                                "tenant_id": tenant_id,
+                                "document_id": doc.id,
+                                "active_index_version": None,
+                                "failure_code": code,
+                            },
+                        )
+                        session.commit()
+                    except Exception as audit_err:
+                        logger.warning(
+                            "Failed to record audit event for doc '%s': %s", doc.id, audit_err
+                        )
+                        session.rollback()
+                    continue
+
+                self.vector_store.delete_stale_chunks(
+                    document_id=doc.id,
+                    tenant_id=tenant_id,
+                    active_version=auth_active_v,
+                )
+
+                doc.index_cleanup_pending = False
+                record_audit_event(
+                    session=session,
+                    tenant_id=tenant_id,
+                    actor_id=actor_id,
+                    event_type="INDEX_CLEANUP_COMPLETED",
+                    resource_type="document",
+                    resource_id=doc.id,
+                    details={
+                        "tenant_id": tenant_id,
+                        "document_id": doc.id,
+                        "active_index_version": auth_active_v,
+                    },
+                )
+                session.commit()
+                succeeded_count += 1
+
+            except Exception as err:
+                session.rollback()
+                logger.warning(
+                    "Reconciliation cleanup failed for doc '%s': %s",
+                    doc_id,
+                    err,
+                )
+                failed_count += 1
+                code = (
+                    "VECTOR_STORE_ERROR" if isinstance(err, VectorStoreError) else "CLEANUP_FAILED"
+                )
+                failure_codes.append(code)
+                try:
+                    record_audit_event(
+                        session=session,
+                        tenant_id=tenant_id,
+                        actor_id=actor_id,
+                        event_type="INDEX_CLEANUP_FAILED",
+                        resource_type="document",
+                        resource_id=doc_id,
+                        details={
+                            "tenant_id": tenant_id,
+                            "document_id": doc_id,
+                            "active_index_version": auth_active_v,
+                            "failure_code": code,
+                        },
+                    )
+                    session.commit()
+                except Exception as audit_err:
+                    logger.warning(
+                        "Failed to record audit event for doc '%s': %s", doc_id, audit_err
+                    )
+                    session.rollback()
+
+        return CleanupReconciliationResult(
+            tenant_id=tenant_id,
+            processed_count=processed_count,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            failure_codes=failure_codes,
+        )

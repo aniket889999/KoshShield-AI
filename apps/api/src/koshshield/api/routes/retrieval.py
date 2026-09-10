@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,8 @@ from koshshield.config import Settings, get_settings
 from koshshield.database import get_db
 from koshshield.models import DocumentChunkRecord, DocumentPageRecord, DocumentRecord, DocumentState
 from koshshield.schemas import (
+    CleanupPendingRequest,
+    CleanupPendingResponse,
     IndexingStatusResponse,
     RetrievalEvidenceItem,
     RetrievalResponse,
@@ -18,6 +20,7 @@ from koshshield.schemas import (
     RetrievalVisualRegion,
 )
 from koshshield.security.context import (
+    AdminContextDependency,
     ExecutorContextDependency,
     RequestContextDependency,
 )
@@ -256,6 +259,45 @@ def retrieval_status(
         total_chunks=total_chunks,
         indexed_documents_count=int(indexed_docs),
     )
+
+
+@router.post(
+    "/retrieval/cleanup-pending",
+    response_model=CleanupPendingResponse,
+    status_code=status.HTTP_200_OK,
+)
+def cleanup_pending(
+    session: SessionDependency,
+    indexing_service: Annotated[DocumentIndexingService, Depends(get_indexing_service)],
+    context: AdminContextDependency,
+    request: Annotated[CleanupPendingRequest | None, Body()] = None,
+) -> CleanupPendingResponse:
+    """Operational endpoint for tenant-scoped reconciliation of pending stale index cleanups.
+    Requires administrative authorization and enforces strict tenant boundaries.
+    """
+    try:
+        limit = request.limit if request is not None else 50
+        result = indexing_service.reconcile_pending_cleanups(
+            session=session,
+            tenant_id=context.tenant_id,
+            limit=limit,
+            actor_id=context.actor_id,
+        )
+        return CleanupPendingResponse(
+            tenant_id=result.tenant_id,
+            processed_count=result.processed_count,
+            succeeded_count=result.succeeded_count,
+            failed_count=result.failed_count,
+            failure_codes=result.failure_codes,
+        )
+    except HTTPException:
+        raise
+    except Exception as err:
+        logger.error("Failed to reconcile pending index cleanups: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Pending index cleanup reconciliation failed.",
+        ) from None
 
 
 @router.post(
