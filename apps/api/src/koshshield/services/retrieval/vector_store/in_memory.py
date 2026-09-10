@@ -26,7 +26,10 @@ class InMemoryVectorStore(VectorStore):
         self.collection_created = True
 
     def upsert_chunks(self, chunks: list[VectorStoreChunk]) -> int:
-        self.chunks.extend(chunks)
+        chunk_map = {c.point_id: c for c in self.chunks}
+        for chunk in chunks:
+            chunk_map[chunk.point_id] = chunk
+        self.chunks = list(chunk_map.values())
         return len(chunks)
 
     def verify_points(self, point_ids: list[str], tenant_id: str) -> bool:
@@ -47,6 +50,22 @@ class InMemoryVectorStore(VectorStore):
                 c.document_id == document_id
                 and c.tenant_id == tenant_id
                 and c.index_version < active_version
+            )
+        ]
+        return initial - len(self.chunks)
+
+    def delete_version_chunks(self, document_id: str, tenant_id: str, index_version: int) -> int:
+        """Remove chunks for a specific index_version of a document,
+        strictly scoped to tenant_id.
+        """
+        initial = len(self.chunks)
+        self.chunks = [
+            c
+            for c in self.chunks
+            if not (
+                c.document_id == document_id
+                and c.tenant_id == tenant_id
+                and c.index_version == index_version
             )
         ]
         return initial - len(self.chunks)
@@ -79,12 +98,20 @@ class InMemoryVectorStore(VectorStore):
         query_vector: list[float],
         tenant_id: str,
         permitted_document_ids: list[str] | None = None,
+        active_document_versions: dict[str, int] | None = None,
         classification: str | None = None,
         limit: int = 10,
     ) -> list[VectorStoreSearchResult]:
         filtered = [c for c in self.chunks if c.tenant_id == tenant_id]
         if permitted_document_ids is not None:
             filtered = [c for c in filtered if c.document_id in permitted_document_ids]
+        if active_document_versions is not None:
+            filtered = [
+                c
+                for c in filtered
+                if c.document_id in active_document_versions
+                and c.index_version == active_document_versions[c.document_id]
+            ]
         if classification:
             filtered = [c for c in filtered if c.classification == classification]
 
@@ -110,12 +137,20 @@ class InMemoryVectorStore(VectorStore):
         values: list[float],
         tenant_id: str,
         permitted_document_ids: list[str] | None = None,
+        active_document_versions: dict[str, int] | None = None,
         classification: str | None = None,
         limit: int = 10,
     ) -> list[VectorStoreSearchResult]:
         filtered = [c for c in self.chunks if c.tenant_id == tenant_id]
         if permitted_document_ids is not None:
             filtered = [c for c in filtered if c.document_id in permitted_document_ids]
+        if active_document_versions is not None:
+            filtered = [
+                c
+                for c in filtered
+                if c.document_id in active_document_versions
+                and c.index_version == active_document_versions[c.document_id]
+            ]
         if classification:
             filtered = [c for c in filtered if c.classification == classification]
 

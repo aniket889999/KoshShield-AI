@@ -3,8 +3,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from koshshield.models import DocumentRecord
 from koshshield.services.audit import record_audit_event
 from koshshield.services.retrieval.embeddings.interfaces import EmbeddingProvider
 from koshshield.services.retrieval.vector_store.interfaces import (
@@ -78,6 +80,7 @@ class HybridRetrievalService:
         query: str,
         tenant_id: str = "default",
         permitted_document_ids: list[str] | None = None,
+        active_document_versions: dict[str, int] | None = None,
         classification: str | None = None,
         top_k: int = 5,
         session: Session | None = None,
@@ -93,36 +96,112 @@ class HybridRetrievalService:
 
         top_k = max(1, min(top_k, 50))
 
-        # 1. Embed query
+        # 1. Resolve authorized documents and active versions from database if session is present
+        if session is not None and active_document_versions is None:
+            records = session.execute(
+                select(DocumentRecord.id, DocumentRecord.active_index_version).where(
+                    DocumentRecord.tenant_id == tenant_id,
+                    DocumentRecord.active_index_version.is_not(None),
+                )
+            ).fetchall()
+            tenant_doc_versions = {r[0]: int(r[1]) for r in records}
+
+            if permitted_document_ids is not None:
+                # Intersect caller-permitted document IDs with server-authorized tenant documents
+                active_document_versions = {
+                    doc_id: tenant_doc_versions[doc_id]
+                    for doc_id in permitted_document_ids
+                    if doc_id in tenant_doc_versions
+                }
+            else:
+                active_document_versions = tenant_doc_versions
+
+        # If active_document_versions is an empty dict, no documents are accessible
+        if active_document_versions is not None and len(active_document_versions) == 0:
+            duration_ms = (time.perf_counter() - start_time) * 1000.0
+            if session is not None:
+                record_audit_event(
+                    session=session,
+                    tenant_id=tenant_id,
+                    actor_id=actor_id,
+                    event_type="RETRIEVAL_QUERY_EXECUTED",
+                    resource_type="retrieval",
+                    resource_id=None,
+                    details={
+                        "actor_id": actor_id,
+                        "tenant_id": tenant_id,
+                        "query_length": len(clean_query),
+                        "top_k": top_k,
+                        "permitted_document_ids": permitted_document_ids,
+                        "classification": classification,
+                        "result_chunk_ids": [],
+                        "result_count": 0,
+                        "duration_ms": round(duration_ms, 2),
+                        "policy_result": "ALLOWED",
+                    },
+                )
+                session.commit()
+            return RetrievalEvidencePack(
+                query_length=len(clean_query),
+                duration_ms=round(duration_ms, 2),
+                tenant_id=tenant_id,
+                top_k=top_k,
+                total_found=0,
+                items=[],
+            )
+
+        # 2. Embed query
         query_embedding = self.embedding_provider.embed_query(clean_query)
 
-        # 2. Retrieve dense candidates with mandatory tenant filter
+        # 3. Retrieve dense candidates with mandatory tenant and active version filter
         dense_hits = self.vector_store.search_dense(
             query_vector=query_embedding.dense,
             tenant_id=tenant_id,
             permitted_document_ids=permitted_document_ids,
+            active_document_versions=active_document_versions,
             classification=classification,
             limit=top_k * 3,
         )
 
-        # 3. Retrieve sparse candidates with mandatory tenant filter
+        # 4. Retrieve sparse candidates with mandatory tenant and active version filter
         sparse_hits = self.vector_store.search_sparse(
             indices=query_embedding.sparse_indices,
             values=query_embedding.sparse_values,
             tenant_id=tenant_id,
             permitted_document_ids=permitted_document_ids,
+            active_document_versions=active_document_versions,
             classification=classification,
             limit=top_k * 3,
         )
 
-        # 4. Reciprocal Rank Fusion (RRF)
+        # 5. Reciprocal Rank Fusion (RRF) with final DB-authoritative payload validation
         fused_scores: dict[str, float] = {}
         hit_sources: dict[str, set[str]] = {}
         payload_map: dict[str, dict[str, Any]] = {}
 
         def process_ranked_list(hits: list[VectorStoreSearchResult], source_name: str) -> None:
             for rank_idx, hit in enumerate(hits, start=1):
-                chunk_id = str(hit.payload.get("chunk_id") or hit.point_id)
+                payload = hit.payload
+                if not isinstance(payload, dict):
+                    continue
+                # DB-authoritative payload validation: tenant isolation
+                if payload.get("tenant_id") != tenant_id:
+                    continue
+
+                doc_id = payload.get("document_id")
+                idx_ver = payload.get("index_version")
+
+                # DB-authoritative payload validation: active generation check
+                if active_document_versions is not None:
+                    if doc_id not in active_document_versions:
+                        continue
+                    if idx_ver != active_document_versions[doc_id]:
+                        continue
+
+                chunk_id = str(payload.get("chunk_id") or hit.point_id)
+                if not chunk_id or not payload.get("masked_text"):
+                    continue
+
                 rrf_increment = 1.0 / (self.rrf_k + rank_idx)
                 fused_scores[chunk_id] = fused_scores.get(chunk_id, 0.0) + rrf_increment
 
@@ -131,7 +210,7 @@ class HybridRetrievalService:
                 hit_sources[chunk_id].add(source_name)
 
                 if chunk_id not in payload_map:
-                    payload_map[chunk_id] = hit.payload
+                    payload_map[chunk_id] = payload
 
         process_ranked_list(dense_hits, "dense")
         process_ranked_list(sparse_hits, "sparse")

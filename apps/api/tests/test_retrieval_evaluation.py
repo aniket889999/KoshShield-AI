@@ -1,3 +1,4 @@
+import hashlib
 import os
 import uuid
 from dataclasses import dataclass
@@ -108,7 +109,7 @@ def test_deterministic_synthetic_pipeline_evaluation() -> None:
                 filename=spec["filename"],
                 media_type="application/pdf",
                 size_bytes=2048,
-                sha256=f"hash-{spec['doc_id']}-abcdef1234567890",
+                sha256=hashlib.sha256(spec["doc_id"].encode()).hexdigest(),
                 vault_path=f"vault/{spec['doc_id']}.ksh",
                 status=DocumentState.INDEX_READY,
                 tenant_id=spec["tenant"],

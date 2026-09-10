@@ -94,6 +94,35 @@ def test_hybrid_search_rrf_and_citations(db_session: Session) -> None:
 
     vector_store.upsert_chunks([chunk_1, chunk_2])
 
+    from koshshield.models import DocumentRecord, DocumentState
+
+    doc1 = DocumentRecord(
+        id="doc-procure-1",
+        tenant_id="dept-procure",
+        filename="Tender-2026.pdf",
+        media_type="application/pdf",
+        size_bytes=2048,
+        sha256="b" * 64,
+        vault_path="vault/doc-procure-1.ksh",
+        status=DocumentState.INDEXED,
+        version=2,
+        active_index_version=1,
+    )
+    doc2 = DocumentRecord(
+        id="doc-budget-2",
+        tenant_id="dept-procure",
+        filename="Budget-2026.pdf",
+        media_type="application/pdf",
+        size_bytes=2048,
+        sha256="d" * 64,
+        vault_path="vault/doc-budget-2.ksh",
+        status=DocumentState.INDEXED,
+        version=1,
+        active_index_version=1,
+    )
+    db_session.add_all([doc1, doc2])
+    db_session.commit()
+
     retrieval = HybridRetrievalService(
         embedding_provider=embedding_provider,
         vector_store=vector_store,

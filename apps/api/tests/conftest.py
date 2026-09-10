@@ -15,10 +15,12 @@ from alembic.script import ScriptDirectory  # noqa: E402
 from koshshield.database import Base, engine  # noqa: E402
 from koshshield.database.migration import get_alembic_config  # noqa: E402
 from koshshield.main import app  # noqa: E402
+from koshshield.services.retrieval.provider_registry import reset_provider_registry  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def reset_state() -> None:
+    reset_provider_registry()
     vault = Path(os.environ["KOSHSHIELD_VAULT_DIR"])
     if vault.exists():
         for path in vault.iterdir():

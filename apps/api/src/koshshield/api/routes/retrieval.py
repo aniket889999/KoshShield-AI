@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Annotated
 
@@ -22,7 +23,6 @@ from koshshield.security.context import (
 )
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.retrieval.chunking import DeterministicMaskedChunker
-from koshshield.services.retrieval.embeddings.bge_m3 import BgeM3EmbeddingProvider
 from koshshield.services.retrieval.embeddings.interfaces import (
     EmbeddingProvider,
     ModelUnavailableError,
@@ -36,12 +36,17 @@ from koshshield.services.retrieval.privacy_gate import (
     RetrievalPrivacyGate,
     UnresolvedFindingsError,
 )
+from koshshield.services.retrieval.provider_registry import (
+    get_singleton_embedding_provider,
+    get_singleton_vector_store,
+)
 from koshshield.services.retrieval.vector_store.interfaces import (
     VectorStore,
     VectorStoreError,
     VectorStoreUnavailableError,
 )
-from koshshield.services.retrieval.vector_store.qdrant import QdrantVectorStore
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 SessionDependency = Annotated[Session, Depends(get_db)]
@@ -49,18 +54,11 @@ SettingsDependency = Annotated[Settings, Depends(get_settings)]
 
 
 def get_embedding_provider(settings: SettingsDependency) -> EmbeddingProvider:
-    return BgeM3EmbeddingProvider(
-        model_dir=settings.embedding_model_dir,
-        device=settings.embedding_device,
-        batch_size=settings.embedding_batch_size,
-    )
+    return get_singleton_embedding_provider(settings)
 
 
 def get_vector_store(settings: SettingsDependency) -> VectorStore:
-    return QdrantVectorStore(
-        qdrant_url=settings.qdrant_url,
-        collection_name=settings.qdrant_collection,
-    )
+    return get_singleton_vector_store(settings)
 
 
 def get_privacy_gate(settings: SettingsDependency) -> RetrievalPrivacyGate:
@@ -122,29 +120,41 @@ def index_document(
             completed_at=result.completed_at,
         )
     except (DocumentNotApprovedError, UnresolvedFindingsError, ResidualPiiDetectedError) as err:
+        logger.warning("Privacy Gate rejected indexing: %s", err)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Privacy Gate rejected indexing: {err}",
+            detail="Privacy Gate rejected indexing: document not approved or findings unresolved.",
         ) from err
     except PrivacyGateError as err:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err)) from err
+        logger.warning("Privacy Gate error: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Privacy Gate validation failed.",
+        ) from err
     except ModelUnavailableError as err:
+        logger.error("Local embedding model unavailable: %s", err)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Local embedding model unavailable: {err}",
+            detail="Local embedding model unavailable.",
         ) from err
     except VectorStoreUnavailableError as err:
+        logger.error("Vector store unavailable: %s", err)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Vector store unavailable: {err}",
+            detail="Vector store unavailable.",
         ) from err
     except VectorStoreError as err:
+        logger.error("Vector store error: %s", err)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Vector store error: {err}",
+            detail="Vector store error.",
         ) from err
     except ValueError as err:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err)) from err
+        logger.warning("Invalid argument during indexing: %s", err)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or invalid request.",
+        ) from err
 
 
 @router.get(
@@ -205,8 +215,12 @@ def retrieval_status(
     if vs_ready:
         try:
             total_chunks = vector_store.count_points(tenant_id=context.tenant_id)
-        except Exception:
-            total_chunks = 0
+        except (VectorStoreError, VectorStoreUnavailableError) as err:
+            logger.error("Vector store error counting points: %s", err)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Vector store error counting points.",
+            ) from err
 
     indexed_docs = (
         session.scalar(
@@ -322,14 +336,16 @@ def get_authorized_evidence_page_image(
     try:
         hits = vector_store.retrieve_points(point_ids=[chunk_id], tenant_id=context.tenant_id)
     except VectorStoreUnavailableError as err:
+        logger.error("Vector store unavailable retrieving evidence: %s", err)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Vector store unavailable: {err}",
+            detail="Vector store unavailable.",
         ) from err
     except VectorStoreError as err:
+        logger.error("Vector store error retrieving evidence: %s", err)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Vector store error: {err}",
+            detail="Vector store error.",
         ) from err
 
     if not hits:

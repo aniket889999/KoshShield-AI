@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
         self._model: Any | None = None
         self._configured_dim: int | None = None
         self._validated_dim: int | None = None
+        self._init_lock = threading.Lock()
 
         if model_dir:
             model_str = str(model_dir).strip()
@@ -74,7 +76,14 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
 
     @property
     def dense_dim(self) -> int:
-        return self._validated_dim or self._configured_dim or 1024
+        if self._validated_dim is not None:
+            return self._validated_dim
+        if self._configured_dim is not None:
+            return self._configured_dim
+        raise ModelUnavailableError(
+            "BGE-M3 dense dimension is unknown: missing or malformed configuration in model "
+            "directory. No fallback dimension permitted."
+        )
 
     def is_available(self) -> tuple[bool, str]:
         if not self.model_dir:
@@ -109,27 +118,33 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
         if self._model is not None:
             return self._model
 
-        ready, reason = self.is_available()
-        if not ready:
-            raise ModelUnavailableError(f"Local BGE-M3 model is unavailable: {reason}")
+        with self._init_lock:
+            if self._model is not None:
+                return self._model
 
-        try:
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+            ready, reason = self.is_available()
+            if not ready:
+                raise ModelUnavailableError(f"Local BGE-M3 model is unavailable: {reason}")
 
-            from FlagEmbedding import BGEM3FlagModel
+            try:
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
-            logger.info("Loading local BGE-M3 model from %s on %s...", self.model_dir, self.device)
-            self._model = BGEM3FlagModel(
-                str(self.model_dir),
-                use_fp16=False,
-                device=self.device,
-            )
-            return self._model
-        except Exception as err:
-            logger.error("Failed to load BGE-M3 model: %s", err)
-            raise ModelUnavailableError(f"Failed to load local BGE-M3 model: {err}") from err
+                from FlagEmbedding import BGEM3FlagModel
+
+                logger.info(
+                    "Loading local BGE-M3 model from %s on %s...", self.model_dir, self.device
+                )
+                self._model = BGEM3FlagModel(
+                    str(self.model_dir),
+                    use_fp16=False,
+                    device=self.device,
+                )
+                return self._model
+            except Exception as err:
+                logger.error("Failed to load BGE-M3 model: %s", err)
+                raise ModelUnavailableError(f"Failed to load local BGE-M3 model: {err}") from err
 
     @staticmethod
     def _format_sparse(lexical_dict: dict[Any, float]) -> tuple[list[int], list[float]]:
@@ -142,7 +157,16 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
             elif isinstance(key, str) and key.isdigit():
                 idx = int(key)
             else:
-                idx = abs(hash(str(key))) % (2**31 - 1)
+                raise ValueError(
+                    f"Invalid sparse token ID '{key}': "
+                    "sparse keys must be non-negative integer token IDs."
+                )
+
+            if idx < 0:
+                raise ValueError(
+                    f"Invalid sparse token ID '{idx}': sparse token ID must be non-negative."
+                )
+
             indices.append(idx)
             values.append(float(val))
 

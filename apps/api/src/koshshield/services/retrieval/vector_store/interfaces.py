@@ -87,6 +87,12 @@ class VectorStore(Protocol):
         """
         ...
 
+    def delete_version_chunks(self, document_id: str, tenant_id: str, index_version: int) -> int:
+        """Remove chunks for a specific index_version of a document, strictly scoped to tenant_id.
+        Must never delete an active generation.
+        """
+        ...
+
     def delete_document_chunks(self, document_id: str, tenant_id: str) -> int:
         """Remove all chunks associated with a document, strictly scoped to tenant_id."""
         ...
@@ -102,10 +108,11 @@ class VectorStore(Protocol):
         query_vector: list[float],
         tenant_id: str,
         permitted_document_ids: list[str] | None = None,
+        active_document_versions: dict[str, int] | None = None,
         classification: str | None = None,
         limit: int = 10,
     ) -> list[VectorStoreSearchResult]:
-        """Search using dense vector with mandatory tenant isolation."""
+        """Search dense vectors with tenant isolation and active version filtering."""
         ...
 
     def search_sparse(
@@ -114,10 +121,11 @@ class VectorStore(Protocol):
         values: list[float],
         tenant_id: str,
         permitted_document_ids: list[str] | None = None,
+        active_document_versions: dict[str, int] | None = None,
         classification: str | None = None,
         limit: int = 10,
     ) -> list[VectorStoreSearchResult]:
-        """Search using sparse lexical vector with mandatory tenant isolation."""
+        """Search sparse vectors with tenant isolation and active version filtering."""
         ...
 
     def count_points(self, tenant_id: str) -> int:

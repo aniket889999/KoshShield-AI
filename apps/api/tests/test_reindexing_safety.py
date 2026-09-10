@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from unittest.mock import MagicMock
 
@@ -24,7 +25,7 @@ def create_indexed_document(session: Session, doc_id: str) -> DocumentRecord:
         filename="safety_test.pdf",
         media_type="application/pdf",
         size_bytes=2048,
-        sha256="sha256-original-doc-hash-abcdef1234567890abcdef1234567890abcdef123456",
+        sha256=hashlib.sha256(doc_id.encode("utf-8")).hexdigest(),
         vault_path=f"vault/{doc_id}.ksh",
         status=DocumentState.INDEX_READY,
         version=1,
@@ -92,9 +93,9 @@ def test_reindexing_failure_at_embedding_preserves_old_index() -> None:
         assert len(vector_store.chunks) == initial_chunk_count
         assert [c.point_id for c in vector_store.chunks] == initial_chunk_ids
 
-        # Invariant: Document marked INDEX_FAILED and old active version preserved
+        # Invariant: Document remains searchable (INDEXED) and old active version preserved
         session.refresh(doc)
-        assert doc.status == DocumentState.INDEX_FAILED
+        assert doc.status == DocumentState.INDEXED
         assert doc.active_index_version == 1
 
 
@@ -140,7 +141,7 @@ def test_reindexing_failure_at_upsert_preserves_old_index() -> None:
         # Invariant: Old points not deleted
         assert [c.point_id for c in vector_store.chunks] == initial_chunk_ids
         session.refresh(doc)
-        assert doc.status == DocumentState.INDEX_FAILED
+        assert doc.status == DocumentState.INDEXED
         assert doc.active_index_version == 1
 
 
@@ -183,7 +184,7 @@ def test_reindexing_failure_at_verification_preserves_old_index() -> None:
         assert "Index verification failed" in str(exc.value)
 
         session.refresh(doc)
-        assert doc.status == DocumentState.INDEX_FAILED
+        assert doc.status == DocumentState.INDEXED
         assert doc.active_index_version == 1
 
 
