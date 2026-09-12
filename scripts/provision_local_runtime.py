@@ -15,12 +15,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST_PATH = REPO_ROOT / "docs" / "runtime_artifacts_manifest.json"
@@ -36,6 +47,32 @@ ESTIMATED_OVERHEAD_BYTES: dict[str, int] = {
     "temp_extraction_space": int(2.0 * GIB_BYTES),
     "docker_storage_growth": int(1.5 * GIB_BYTES),
     "runtime_caches": int(1.0 * GIB_BYTES),
+}
+
+SHA256_HEX_REGEX = re.compile(r"^[0-9a-fA-F]{64}$")
+IMAGE_DIGEST_REGEX = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
+
+REQUIRED_RUNTIME_CATEGORIES = {
+    "embedding",
+    "multimodal_llm",
+    "ocr",
+    "inference_server",
+    "vector_store",
+}
+
+REQUIRED_RUNTIME_PACKAGES = {
+    "fastapi",
+    "pydantic",
+    "sqlalchemy",
+    "cryptography",
+    "httpx",
+    "pymupdf",
+    "pillow",
+    "qdrant-client",
+    "flagembedding",
+    "torch",
+    "paddlepaddle",
+    "paddleocr",
 }
 
 
@@ -103,7 +140,11 @@ class ManifestValidationResult:
     existing_verified_bytes: int = 0
     net_required_bytes: int = 0
     model_artifact_bytes: int = 0
+    existing_verified_model_bytes: int = 0
+    net_model_artifact_bytes: int = 0
     non_model_artifact_bytes: int = 0
+    existing_verified_non_model_bytes: int = 0
+    net_non_model_artifact_bytes: int = 0
     artifacts_inventory: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -116,6 +157,264 @@ class ProvisioningReport:
     manifest_validation: ManifestValidationResult
     dependency_lock_status: str
     timestamp: str
+
+
+def check_path_safety(path_str: str, allow_empty: bool = False) -> None:
+    """Ensures paths are relative and do not perform directory traversal."""
+    if not path_str:
+        if allow_empty:
+            return
+        raise ValueError("Path string cannot be empty")
+    p = Path(path_str)
+    if p.is_absolute():
+        raise ValueError(f"Path '{path_str}' must be relative, not absolute")
+    if ".." in p.parts:
+        raise ValueError(f"Path '{path_str}' contains forbidden '..' path traversal")
+
+
+class ManifestFileModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    filename: StrictStr
+    size_bytes: StrictInt
+    sha256: StrictStr | None = None
+    integrity_status: StrictStr = "UNVERIFIED"
+    provenance: StrictStr | None = None
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, v: str) -> str:
+        check_path_safety(v)
+        return v
+
+    @field_validator("size_bytes")
+    @classmethod
+    def validate_size_bytes(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(f"size_bytes must be a positive integer, got {v}")
+        return v
+
+    @field_validator("integrity_status")
+    @classmethod
+    def validate_integrity_status(cls, v: str) -> str:
+        if v not in {"VERIFIED", "UNVERIFIED"}:
+            raise ValueError(
+                f"integrity_status must be 'VERIFIED' or 'UNVERIFIED', got '{v}'"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_sha256_format(self) -> ManifestFileModel:
+        if self.sha256 is not None and not SHA256_HEX_REGEX.match(self.sha256):
+            raise ValueError(
+                f"sha256 digest '{self.sha256}' for '{self.filename}' is not a valid 64-hexadecimal character string"
+            )
+        if self.integrity_status == "VERIFIED" and not self.sha256:
+            raise ValueError(
+                f"integrity_status is 'VERIFIED' but sha256 digest is missing for '{self.filename}'"
+            )
+        return self
+
+
+class ManifestArchiveModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source_archive: StrictStr
+    archive_filename: StrictStr
+    target_dir: StrictStr
+    size_bytes: StrictInt
+    sha256: StrictStr | None = None
+    integrity_status: StrictStr = "UNVERIFIED"
+    provenance: StrictStr | None = None
+
+    @field_validator("archive_filename", "target_dir")
+    @classmethod
+    def validate_archive_paths(cls, v: str) -> str:
+        check_path_safety(v)
+        return v
+
+    @field_validator("size_bytes")
+    @classmethod
+    def validate_size_bytes(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(f"size_bytes must be a positive integer, got {v}")
+        return v
+
+    @field_validator("integrity_status")
+    @classmethod
+    def validate_integrity_status(cls, v: str) -> str:
+        if v not in {"VERIFIED", "UNVERIFIED"}:
+            raise ValueError(
+                f"integrity_status must be 'VERIFIED' or 'UNVERIFIED', got '{v}'"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_sha256_format(self) -> ManifestArchiveModel:
+        if self.sha256 is not None and not SHA256_HEX_REGEX.match(self.sha256):
+            raise ValueError(
+                f"sha256 digest '{self.sha256}' for archive '{self.archive_filename}' is invalid"
+            )
+        if self.integrity_status == "VERIFIED" and not self.sha256:
+            raise ValueError(
+                f"integrity_status is 'VERIFIED' but sha256 digest is missing for archive '{self.archive_filename}'"
+            )
+        return self
+
+
+class LlamaServerArtifactModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: StrictStr
+    category: StrictStr
+    official_source: StrictStr = ""
+    license: StrictStr = ""
+    pinned_release: StrictStr = ""
+    pinned_build: StrictStr = ""
+    pinned_commit: StrictStr = ""
+    target_binary: StrictStr
+    target_architecture: StrictStr = "darwin-arm64"
+    estimated_size_bytes: StrictInt
+    estimated_size_human: StrictStr | None = None
+    sha256: StrictStr | None = None
+    integrity_status: StrictStr = "UNVERIFIED"
+    provenance: StrictStr | None = None
+
+    @field_validator("target_binary")
+    @classmethod
+    def validate_binary(cls, v: str) -> str:
+        check_path_safety(v)
+        return v
+
+    @field_validator("estimated_size_bytes")
+    @classmethod
+    def validate_size(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(
+                f"estimated_size_bytes must be a positive integer, got {v}"
+            )
+        return v
+
+    @field_validator("integrity_status")
+    @classmethod
+    def validate_integrity_status(cls, v: str) -> str:
+        if v not in {"VERIFIED", "UNVERIFIED"}:
+            raise ValueError(
+                f"integrity_status must be 'VERIFIED' or 'UNVERIFIED', got '{v}'"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_sha256_format(self) -> LlamaServerArtifactModel:
+        if self.sha256 is not None and not SHA256_HEX_REGEX.match(self.sha256):
+            raise ValueError(
+                f"sha256 digest '{self.sha256}' for binary '{self.target_binary}' is invalid"
+            )
+        if self.integrity_status == "VERIFIED" and not self.sha256:
+            raise ValueError(
+                f"integrity_status is 'VERIFIED' but sha256 digest is missing for binary '{self.target_binary}'"
+            )
+        return self
+
+
+class QdrantArtifactModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: StrictStr
+    category: StrictStr
+    official_source: StrictStr = ""
+    license: StrictStr = ""
+    pinned_version: StrictStr
+    image_reference: StrictStr
+    image_digest: StrictStr | None = None
+    integrity_status: StrictStr = "UNVERIFIED"
+    estimated_size_bytes: StrictInt
+    estimated_size_human: StrictStr | None = None
+    default_url: StrictStr | None = None
+    client_compatibility: StrictStr | None = None
+    provenance: StrictStr | None = None
+
+    @field_validator("estimated_size_bytes")
+    @classmethod
+    def validate_size(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError(
+                f"estimated_size_bytes must be a positive integer, got {v}"
+            )
+        return v
+
+    @field_validator("pinned_version")
+    @classmethod
+    def validate_version(cls, v: str) -> str:
+        if v != "v1.15.4":
+            raise ValueError(f"Qdrant pinned_version must be 'v1.15.4', got '{v}'")
+        return v
+
+    @field_validator("integrity_status")
+    @classmethod
+    def validate_integrity_status(cls, v: str) -> str:
+        if v not in {"VERIFIED", "UNVERIFIED"}:
+            raise ValueError(
+                f"integrity_status must be 'VERIFIED' or 'UNVERIFIED', got '{v}'"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_image_digest_format(self) -> QdrantArtifactModel:
+        if self.image_digest is not None and not IMAGE_DIGEST_REGEX.match(
+            self.image_digest
+        ):
+            raise ValueError(
+                f"image_digest '{self.image_digest}' for Qdrant is not in format 'sha256:<64 hex chars>'"
+            )
+        if self.integrity_status == "VERIFIED" and not self.image_digest:
+            raise ValueError(
+                "integrity_status is 'VERIFIED' but image_digest is missing for Qdrant image"
+            )
+        return self
+
+
+class MultiFileArtifactModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: StrictStr
+    category: StrictStr
+    official_source: StrictStr = ""
+    license: StrictStr = ""
+    target_dir: StrictStr = ""
+    files: list[ManifestFileModel]
+    revision: StrictStr | None = None
+    pinned_runtime_contract: dict[str, Any] | None = None
+    estimated_size_bytes: StrictInt | None = None
+    estimated_size_human: StrictStr | None = None
+
+    @field_validator("target_dir")
+    @classmethod
+    def validate_target_dir(cls, v: str) -> str:
+        check_path_safety(v, allow_empty=True)
+        return v
+
+    @field_validator("files")
+    @classmethod
+    def validate_files_non_empty(
+        cls, v: list[ManifestFileModel]
+    ) -> list[ManifestFileModel]:
+        if not v:
+            raise ValueError("files list must not be empty")
+        return v
+
+
+class PaddleOCRArtifactModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    id: StrictStr
+    category: StrictStr
+    official_source: StrictStr = ""
+    license: StrictStr = ""
+    detection: ManifestArchiveModel
+    recognition: ManifestArchiveModel
+    estimated_size_bytes: StrictInt | None = None
+    estimated_size_human: StrictStr | None = None
 
 
 def find_nearest_existing_parent(path: Path) -> Path:
@@ -150,51 +449,189 @@ def load_manifest(manifest_path: Path | None = None) -> dict[str, Any]:
 
 
 def check_dependency_lock(repo_root: Path) -> tuple[bool, list[Blocker]]:
-    """Verifies that an authoritative, hash-pinned runtime dependency lock exists."""
+    """Verifies that an authoritative, hash-pinned runtime dependency lock exists.
+
+    Validates:
+    - Lock file exists and is not comment-only or empty.
+    - Each dependency entry is an exact pin with valid sha256 hash syntax.
+    - Rejects unpinned packages, malformed hashes, and comments disguised as pins.
+    - Requires complete coverage of core runtime dependencies.
+    - Distinguishes syntactic validity from verified dependency resolution.
+    """
     candidates = [
         repo_root / "docs" / "requirements-runtime.lock",
         repo_root / "requirements-lock.txt",
     ]
+    lock_file: Path | None = None
     for candidate in candidates:
         if candidate.is_file():
-            content = candidate.read_text(encoding="utf-8")
-            if "--hash=sha256:" in content:
-                return True, []
+            lock_file = candidate
+            break
 
-    blocker = Blocker(
-        code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
-        message=(
-            "Complete verified runtime dependency lock with hashes is not present. "
-            "Untracked wheel caches or unpinned pyproject ranges do not constitute a verified dependency lock."
-        ),
+    if lock_file is None:
+        return False, [
+            Blocker(
+                code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
+                message=(
+                    "Runtime dependency lock file (requirements-lock.txt) is not present. "
+                    "Untracked wheel caches or unpinned pyproject ranges do not constitute a verified dependency lock."
+                ),
+            )
+        ]
+
+    content = lock_file.read_text(encoding="utf-8")
+    lines = content.splitlines()
+
+    req_pattern = re.compile(
+        r"^([a-zA-Z0-9_\-\.]+)\s*==\s*([a-zA-Z0-9_\-\.\+]+)\s*(?:\\?\s*)"
     )
-    return False, [blocker]
+    hash_pattern = re.compile(r"--hash=sha256:([0-9a-fA-F]{64})")
+
+    found_packages: set[str] = set()
+    has_resolution_evidence = False
+
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            if "Verified-Resolution: darwin-arm64-cp312" in stripped:
+                has_resolution_evidence = True
+            continue
+
+        match = req_pattern.match(stripped)
+        if not match:
+            return False, [
+                Blocker(
+                    code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
+                    message=(
+                        f"Invalid dependency lock entry '{stripped}': "
+                        "All requirements must use exact '==' pins and valid sha256 hashes."
+                    ),
+                )
+            ]
+
+        pkg_name = match.group(1).lower().replace("_", "-")
+        hashes = hash_pattern.findall(stripped)
+        if not hashes:
+            return False, [
+                Blocker(
+                    code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
+                    message=f"Package '{pkg_name}' lacks valid sha256 hashes in lock file.",
+                )
+            ]
+
+        found_packages.add(pkg_name)
+
+    if not found_packages:
+        return False, [
+            Blocker(
+                code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
+                message="Dependency lock file contains no valid requirement entries (comment-only or empty).",
+            )
+        ]
+
+    missing_required = REQUIRED_RUNTIME_PACKAGES - found_packages
+    if missing_required:
+        return False, [
+            Blocker(
+                code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
+                message=(
+                    f"Dependency lock does not provide complete runtime coverage; "
+                    f"missing required packages: {sorted(missing_required)}"
+                ),
+            )
+        ]
+
+    if not has_resolution_evidence:
+        return False, [
+            Blocker(
+                code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
+                message=(
+                    "Dependency lock file lacks verified resolution evidence for the local environment. "
+                    "Syntactic pin listing without multi-package dependency resolution is incomplete."
+                ),
+            )
+        ]
+
+    return True, []
 
 
 def validate_manifest(
-    manifest: dict[str, Any], repo_root: Path, model_dir: Path
+    manifest: dict[str, Any],
+    repo_root: Path,
+    model_dir: Path,
+    require_all_categories: bool | None = None,
 ) -> ManifestValidationResult:
     """Performs fail-closed validation of manifest metadata, integrity, and local files."""
     blockers: list[Blocker] = []
-    artifacts = manifest.get("artifacts", [])
-    if not isinstance(artifacts, list) or not artifacts:
+    if not isinstance(manifest, dict):
         blockers.append(
             Blocker(
                 code=BlockerCode.MANIFEST_INVALID,
-                message="Manifest does not define a valid 'artifacts' list.",
+                message="Manifest root must be a JSON object.",
             )
         )
         return ManifestValidationResult(is_valid=False, blockers=blockers)
 
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        blockers.append(
+            Blocker(
+                code=BlockerCode.MANIFEST_INVALID,
+                message="Manifest does not define a non-empty 'artifacts' list.",
+            )
+        )
+        return ManifestValidationResult(is_valid=False, blockers=blockers)
+
+    if require_all_categories is None:
+        require_all_categories = "manifest_version" in manifest
+
+    seen_ids: set[str] = set()
+    found_categories: set[str] = set()
+
     total_manifest_bytes = 0
     existing_verified_bytes = 0
     model_artifact_bytes = 0
+    existing_verified_model_bytes = 0
     non_model_artifact_bytes = 0
+    existing_verified_non_model_bytes = 0
     inventory: list[dict[str, Any]] = []
 
-    for art in artifacts:
-        art_id = art.get("id", "unknown")
-        category = art.get("category", "unknown")
+    for art_idx, art in enumerate(artifacts):
+        if not isinstance(art, dict) or not art:
+            blockers.append(
+                Blocker(
+                    code=BlockerCode.MANIFEST_INVALID,
+                    message=f"Artifact at index {art_idx} is empty or not an object.",
+                )
+            )
+            continue
+
+        art_id = art.get("id")
+        category = art.get("category")
+
+        if not isinstance(art_id, str) or not art_id.strip():
+            blockers.append(
+                Blocker(
+                    code=BlockerCode.MANIFEST_INVALID,
+                    message=f"Artifact at index {art_idx} missing valid 'id'.",
+                )
+            )
+            continue
+
+        if art_id in seen_ids:
+            blockers.append(
+                Blocker(
+                    code=BlockerCode.MANIFEST_INVALID,
+                    message=f"Duplicate artifact identifier detected: '{art_id}'.",
+                )
+            )
+        seen_ids.add(art_id)
+
+        if isinstance(category, str):
+            found_categories.add(category)
+
         is_model_category = category in {"embedding", "multimodal_llm", "ocr"}
 
         inv_entry: dict[str, Any] = {
@@ -202,13 +639,38 @@ def validate_manifest(
             "category": category,
             "source": art.get("official_source"),
             "license": art.get("license"),
-            "estimated_size_bytes": art.get("estimated_size_bytes", 0),
             "files": [],
         }
 
         # Multi-file model artifacts (e.g. bge-m3, qwen3-vl)
-        if "files" in art and isinstance(art["files"], list):
-            target_sub = art.get("target_dir", "")
+        if category in {"embedding", "multimodal_llm"}:
+            try:
+                parsed_model = MultiFileArtifactModel.model_validate(art)
+            except ValidationError as val_err:
+                for err in val_err.errors():
+                    field_name = ".".join(str(loc) for loc in err["loc"])
+                    msg = err["msg"]
+                    if (
+                        "sha256" in field_name
+                        or "digest" in field_name
+                        or "sha256" in msg.lower()
+                        or "digest" in msg.lower()
+                    ):
+                        code = BlockerCode.ARTIFACT_INTEGRITY_INVALID
+                    elif "pinned_version" in field_name or "pinned_version" in msg:
+                        code = BlockerCode.QDRANT_VERSION_MISMATCH
+                    else:
+                        code = BlockerCode.MANIFEST_INVALID
+                    blockers.append(
+                        Blocker(
+                            code=code,
+                            message=f"Artifact '{art_id}' field '{field_name}': {msg}",
+                            details={"artifact_id": art_id, "error": err},
+                        )
+                    )
+                continue
+
+            target_sub = parsed_model.target_dir
             base_dest = (
                 (model_dir / art_id)
                 if not target_sub
@@ -217,11 +679,12 @@ def validate_manifest(
                 else repo_root / target_sub
             )
 
-            for f_spec in art["files"]:
-                fname = f_spec.get("filename", "")
-                fsize = int(f_spec.get("size_bytes", 0))
-                expected_sha = f_spec.get("sha256")
-                integrity_status = f_spec.get("integrity_status", "UNVERIFIED")
+            for f_spec in parsed_model.files:
+                fname = f_spec.filename
+                fsize = f_spec.size_bytes
+                expected_sha = f_spec.sha256
+                integrity_status = f_spec.integrity_status
+
                 total_manifest_bytes += fsize
                 if is_model_category:
                     model_artifact_bytes += fsize
@@ -234,6 +697,7 @@ def validate_manifest(
                         "size_bytes": fsize,
                         "integrity_status": integrity_status,
                         "sha256": expected_sha,
+                        "provenance": f_spec.provenance,
                     }
                 )
 
@@ -245,137 +709,215 @@ def validate_manifest(
                             details={"artifact_id": art_id, "filename": fname},
                         )
                     )
-                elif len(expected_sha) != 64 or not all(
-                    c in "0123456789abcdef" for c in expected_sha.lower()
-                ):
+
+                local_path = base_dest / fname
+                if local_path.is_file():
+                    local_stat = local_path.stat()
+                    if (
+                        local_stat.st_size == fsize
+                        and expected_sha
+                        and integrity_status == "VERIFIED"
+                    ):
+                        local_sha = compute_file_sha256(local_path)
+                        if local_sha == expected_sha.lower():
+                            existing_verified_bytes += fsize
+                            if is_model_category:
+                                existing_verified_model_bytes += fsize
+                            else:
+                                existing_verified_non_model_bytes += fsize
+                        else:
+                            blockers.append(
+                                Blocker(
+                                    code=BlockerCode.ARTIFACT_CHECKSUM_MISMATCH,
+                                    message=f"Local file {local_path} checksum mismatch (expected {expected_sha}, got {local_sha}).",
+                                    details={"path": str(local_path)},
+                                )
+                            )
+
+        # Archive-based artifacts (e.g. paddleocr)
+        elif category == "ocr":
+            try:
+                parsed_ocr = PaddleOCRArtifactModel.model_validate(art)
+            except ValidationError as val_err:
+                for err in val_err.errors():
+                    field_name = ".".join(str(loc) for loc in err["loc"])
+                    msg = err["msg"]
+                    if (
+                        "sha256" in field_name
+                        or "digest" in field_name
+                        or "sha256" in msg.lower()
+                        or "digest" in msg.lower()
+                    ):
+                        code = BlockerCode.ARTIFACT_INTEGRITY_INVALID
+                    elif "pinned_version" in field_name or "pinned_version" in msg:
+                        code = BlockerCode.QDRANT_VERSION_MISMATCH
+                    else:
+                        code = BlockerCode.MANIFEST_INVALID
                     blockers.append(
                         Blocker(
-                            code=BlockerCode.ARTIFACT_INTEGRITY_INVALID,
-                            message=f"Artifact {art_id} file '{fname}' has invalid SHA-256 digest format.",
+                            code=code,
+                            message=f"OCR artifact '{art_id}' field '{field_name}': {msg}",
+                            details={"artifact_id": art_id, "error": err},
+                        )
+                    )
+                continue
+
+            for arch_obj in [parsed_ocr.detection, parsed_ocr.recognition]:
+                asize = arch_obj.size_bytes
+                total_manifest_bytes += asize
+                model_artifact_bytes += asize
+
+                inv_entry["files"].append(
+                    {
+                        "archive": arch_obj.archive_filename,
+                        "size_bytes": asize,
+                        "integrity_status": arch_obj.integrity_status,
+                        "sha256": arch_obj.sha256,
+                        "provenance": arch_obj.provenance,
+                    }
+                )
+
+                if not arch_obj.sha256 or arch_obj.integrity_status != "VERIFIED":
+                    blockers.append(
+                        Blocker(
+                            code=BlockerCode.ARTIFACT_INTEGRITY_UNVERIFIED,
+                            message=f"OCR archive '{arch_obj.archive_filename}' lacks verified SHA-256 digest.",
                             details={
                                 "artifact_id": art_id,
-                                "filename": fname,
-                                "sha256": expected_sha,
+                                "archive": arch_obj.archive_filename,
                             },
                         )
                     )
 
-                local_path = base_dest / fname
-                if (
-                    local_path.is_file()
-                    and expected_sha
-                    and integrity_status == "VERIFIED"
-                ):
-                    local_sha = compute_file_sha256(local_path)
-                    if local_sha == expected_sha.lower():
-                        existing_verified_bytes += fsize
-                    else:
-                        blockers.append(
-                            Blocker(
-                                code=BlockerCode.ARTIFACT_CHECKSUM_MISMATCH,
-                                message=f"Local file {local_path} checksum mismatch (expected {expected_sha}, got {local_sha}).",
-                                details={"path": str(local_path)},
-                            )
-                        )
-
-        # Archive-based artifacts (e.g. paddleocr)
-        elif category == "ocr":
-            for arch_key in ["detection", "recognition"]:
-                sub = art.get(arch_key, {})
-                if isinstance(sub, dict):
-                    arch_name = sub.get(
-                        "archive_filename", sub.get("source_archive", "")
-                    )
-                    asize = int(sub.get("size_bytes", 0))
-                    total_manifest_bytes += asize
-                    model_artifact_bytes += asize
-                    expected_sha = sub.get("sha256")
-                    integrity_status = sub.get("integrity_status", "UNVERIFIED")
-
-                    inv_entry["files"].append(
-                        {
-                            "archive": arch_name,
-                            "size_bytes": asize,
-                            "integrity_status": integrity_status,
-                            "sha256": expected_sha,
-                        }
-                    )
-
-                    if not expected_sha or integrity_status != "VERIFIED":
-                        blockers.append(
-                            Blocker(
-                                code=BlockerCode.ARTIFACT_INTEGRITY_UNVERIFIED,
-                                message=f"OCR archive '{arch_name}' lacks verified SHA-256 digest.",
-                                details={"artifact_id": art_id, "archive": arch_name},
-                            )
-                        )
-
         # Binary artifacts (e.g. llama-server)
         elif category == "inference_server":
-            bsize = int(art.get("estimated_size_bytes", 0))
+            try:
+                parsed_bin = LlamaServerArtifactModel.model_validate(art)
+            except ValidationError as val_err:
+                for err in val_err.errors():
+                    field_name = ".".join(str(loc) for loc in err["loc"])
+                    msg = err["msg"]
+                    if (
+                        "sha256" in field_name
+                        or "digest" in field_name
+                        or "sha256" in msg.lower()
+                        or "digest" in msg.lower()
+                    ):
+                        code = BlockerCode.ARTIFACT_INTEGRITY_INVALID
+                    elif "pinned_version" in field_name or "pinned_version" in msg:
+                        code = BlockerCode.QDRANT_VERSION_MISMATCH
+                    else:
+                        code = BlockerCode.MANIFEST_INVALID
+                    blockers.append(
+                        Blocker(
+                            code=code,
+                            message=f"Inference server artifact '{art_id}' field '{field_name}': {msg}",
+                            details={"artifact_id": art_id, "error": err},
+                        )
+                    )
+                continue
+
+            bsize = parsed_bin.estimated_size_bytes
             total_manifest_bytes += bsize
             non_model_artifact_bytes += bsize
-            expected_sha = art.get("sha256")
-            integrity_status = art.get("integrity_status", "UNVERIFIED")
 
             inv_entry["files"].append(
                 {
-                    "binary": art.get("target_binary", "llama-server"),
+                    "binary": parsed_bin.target_binary,
                     "size_bytes": bsize,
-                    "integrity_status": integrity_status,
-                    "sha256": expected_sha,
+                    "integrity_status": parsed_bin.integrity_status,
+                    "sha256": parsed_bin.sha256,
+                    "provenance": parsed_bin.provenance,
                 }
             )
 
-            if not expected_sha or integrity_status != "VERIFIED":
+            if not parsed_bin.sha256 or parsed_bin.integrity_status != "VERIFIED":
                 blockers.append(
                     Blocker(
                         code=BlockerCode.ARTIFACT_INTEGRITY_UNVERIFIED,
-                        message=f"Inference binary '{art.get('target_binary')}' lacks verified SHA-256 digest.",
+                        message=f"Inference binary '{parsed_bin.target_binary}' lacks verified SHA-256 digest.",
                         details={"artifact_id": art_id},
                     )
                 )
 
         # Container image artifacts (e.g. qdrant)
         elif category == "vector_store":
-            csize = int(art.get("estimated_size_bytes", 0))
+            try:
+                parsed_qdrant = QdrantArtifactModel.model_validate(art)
+            except ValidationError as val_err:
+                for err in val_err.errors():
+                    field_name = ".".join(str(loc) for loc in err["loc"])
+                    msg = err["msg"]
+                    if (
+                        "sha256" in field_name
+                        or "digest" in field_name
+                        or "sha256" in msg.lower()
+                        or "digest" in msg.lower()
+                    ):
+                        code = BlockerCode.ARTIFACT_INTEGRITY_INVALID
+                    elif "pinned_version" in field_name or "pinned_version" in msg:
+                        code = BlockerCode.QDRANT_VERSION_MISMATCH
+                    else:
+                        code = BlockerCode.MANIFEST_INVALID
+                    blockers.append(
+                        Blocker(
+                            code=code,
+                            message=f"Vector store artifact '{art_id}' field '{field_name}': {msg}",
+                            details={"artifact_id": art_id, "error": err},
+                        )
+                    )
+                continue
+
+            csize = parsed_qdrant.estimated_size_bytes
             total_manifest_bytes += csize
             non_model_artifact_bytes += csize
-            pinned_version = art.get("pinned_version", "")
-            image_digest = art.get("image_digest")
-            integrity_status = art.get("integrity_status", "UNVERIFIED")
 
             inv_entry["container"] = {
-                "image": art.get("image_reference", "qdrant/qdrant:v1.15.4"),
-                "pinned_version": pinned_version,
-                "image_digest": image_digest,
-                "integrity_status": integrity_status,
+                "image": parsed_qdrant.image_reference,
+                "pinned_version": parsed_qdrant.pinned_version,
+                "image_digest": parsed_qdrant.image_digest,
+                "integrity_status": parsed_qdrant.integrity_status,
+                "provenance": parsed_qdrant.provenance,
             }
 
-            if pinned_version != "v1.15.4":
-                blockers.append(
-                    Blocker(
-                        code=BlockerCode.QDRANT_VERSION_MISMATCH,
-                        message=f"Qdrant pinned version '{pinned_version}' does not match repository configuration 'v1.15.4'.",
-                        details={
-                            "pinned_version": pinned_version,
-                            "expected": "v1.15.4",
-                        },
-                    )
-                )
-
-            if not image_digest or integrity_status != "VERIFIED":
+            if (
+                not parsed_qdrant.image_digest
+                or parsed_qdrant.integrity_status != "VERIFIED"
+            ):
                 blockers.append(
                     Blocker(
                         code=BlockerCode.ARTIFACT_INTEGRITY_UNVERIFIED,
-                        message=f"Qdrant container image '{art.get('image_reference')}' lacks verified digest.",
+                        message=f"Qdrant container image '{parsed_qdrant.image_reference}' lacks verified digest.",
                         details={"artifact_id": art_id},
                     )
                 )
+        else:
+            blockers.append(
+                Blocker(
+                    code=BlockerCode.MANIFEST_INVALID,
+                    message=f"Artifact '{art_id}' has unrecognized category '{category}'.",
+                )
+            )
+            continue
 
         inventory.append(inv_entry)
 
-    net_required_bytes = max(0, total_manifest_bytes - existing_verified_bytes)
+    if require_all_categories:
+        missing_categories = REQUIRED_RUNTIME_CATEGORIES - found_categories
+        if missing_categories:
+            blockers.append(
+                Blocker(
+                    code=BlockerCode.MANIFEST_INVALID,
+                    message=f"Manifest missing required runtime categories: {sorted(missing_categories)}",
+                )
+            )
+
+    net_model_bytes = max(0, model_artifact_bytes - existing_verified_model_bytes)
+    net_non_model_bytes = max(
+        0, non_model_artifact_bytes - existing_verified_non_model_bytes
+    )
+    net_required_bytes = net_model_bytes + net_non_model_bytes
+
     return ManifestValidationResult(
         is_valid=len(blockers) == 0,
         blockers=blockers,
@@ -383,7 +925,11 @@ def validate_manifest(
         existing_verified_bytes=existing_verified_bytes,
         net_required_bytes=net_required_bytes,
         model_artifact_bytes=model_artifact_bytes,
+        existing_verified_model_bytes=existing_verified_model_bytes,
+        net_model_artifact_bytes=net_model_bytes,
         non_model_artifact_bytes=non_model_artifact_bytes,
+        existing_verified_non_model_bytes=existing_verified_non_model_bytes,
+        net_non_model_artifact_bytes=net_non_model_bytes,
         artifacts_inventory=inventory,
     )
 
@@ -392,8 +938,10 @@ def check_capacity(
     repo_root: Path,
     model_dir: Path,
     net_artifact_bytes: int,
-    model_artifact_bytes: int,
-    non_model_artifact_bytes: int,
+    net_model_artifact_bytes: int | None = None,
+    net_non_model_artifact_bytes: int | None = None,
+    model_artifact_bytes: int | None = None,
+    non_model_artifact_bytes: int | None = None,
 ) -> CapacityReport:
     """Calculates disk capacity requirements per filesystem in integer bytes with 10 GiB headroom."""
     blockers: list[Blocker] = []
@@ -409,6 +957,21 @@ def check_capacity(
     repo_dev = repo_parent.stat().st_dev
 
     is_same_fs = model_dev == repo_dev
+
+    effective_net_model = (
+        net_model_artifact_bytes
+        if net_model_artifact_bytes is not None
+        else (
+            model_artifact_bytes
+            if model_artifact_bytes is not None
+            else net_artifact_bytes
+        )
+    )
+    effective_net_non_model = (
+        net_non_model_artifact_bytes
+        if net_non_model_artifact_bytes is not None
+        else (non_model_artifact_bytes if non_model_artifact_bytes is not None else 0)
+    )
 
     if is_same_fs:
         usage = shutil.disk_usage(model_parent)
@@ -448,9 +1011,9 @@ def check_capacity(
             )
     else:
         # Separate filesystems: external model storage vs project storage
-        # 1. Model storage filesystem
+        # 1. Model storage filesystem (accurately uses net model bytes after deduplication)
         m_usage = shutil.disk_usage(model_parent)
-        m_required = model_artifact_bytes + RESERVED_HEADROOM_BYTES
+        m_required = effective_net_model + RESERVED_HEADROOM_BYTES
         m_deficit = max(0, m_required - m_usage.free)
         m_sufficient = m_deficit == 0
 
@@ -482,7 +1045,7 @@ def check_capacity(
 
         # 2. Repo / System filesystem
         r_usage = shutil.disk_usage(repo_parent)
-        r_required = non_model_artifact_bytes + total_overhead + RESERVED_HEADROOM_BYTES
+        r_required = effective_net_non_model + total_overhead + RESERVED_HEADROOM_BYTES
         r_deficit = max(0, r_required - r_usage.free)
         r_sufficient = r_deficit == 0
 
@@ -546,8 +1109,8 @@ def assess_readiness(
         repo_root=r_root,
         model_dir=m_dir,
         net_artifact_bytes=manifest_res.net_required_bytes,
-        model_artifact_bytes=manifest_res.model_artifact_bytes,
-        non_model_artifact_bytes=manifest_res.non_model_artifact_bytes,
+        net_model_artifact_bytes=manifest_res.net_model_artifact_bytes,
+        net_non_model_artifact_bytes=manifest_res.net_non_model_artifact_bytes,
     )
 
     all_blockers: list[Blocker] = []

@@ -274,13 +274,258 @@ def test_dependency_lock_incomplete_check(tmp_path: Path) -> None:
     assert len(blockers) == 1
     assert blockers[0].code == BlockerCode.DEPENDENCY_LOCK_INCOMPLETE
 
-    # Create dummy verified lock with hashes
-    lock_file = tmp_path / "requirements-lock.txt"
-    lock_file.write_text("fastapi==0.115.0 --hash=sha256:abcd1234abcd1234\n", encoding="utf-8")
 
-    ok2, blockers2 = check_dependency_lock(tmp_path)
-    assert ok2 is True
-    assert len(blockers2) == 0
+def test_manifest_rejects_empty_artifact_object(tmp_path: Path) -> None:
+    """Reject empty artifact objects."""
+    manifest: dict[str, Any] = {"artifacts": [{}]}
+    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    assert res.is_valid is False
+    assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res.blockers)
+
+
+def test_manifest_rejects_embedding_with_empty_files(tmp_path: Path) -> None:
+    """Reject embedding artifact with empty files list."""
+    manifest: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "bge-m3",
+                "category": "embedding",
+                "official_source": "https://huggingface.co/BAAI/bge-m3",
+                "files": [],
+            }
+        ]
+    }
+    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    assert res.is_valid is False
+    assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res.blockers)
+
+
+def test_manifest_rejects_inference_binary_with_invalid_sha256(tmp_path: Path) -> None:
+    """Reject inference binary with invalid SHA-256 digest format."""
+    manifest: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "llama-server",
+                "category": "inference_server",
+                "official_source": "https://github.com/ggerganov/llama.cpp",
+                "target_binary": "llama-server",
+                "pinned_release": "v0.4.0",
+                "pinned_build": "b10809",
+                "pinned_commit": "5266f24",
+                "estimated_size_bytes": 55000000,
+                "sha256": "x",
+                "integrity_status": "VERIFIED",
+            }
+        ]
+    }
+    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    assert res.is_valid is False
+    assert any(b.code == BlockerCode.ARTIFACT_INTEGRITY_INVALID for b in res.blockers)
+
+
+def test_manifest_rejects_qdrant_with_invalid_image_digest(tmp_path: Path) -> None:
+    """Reject Qdrant container image with invalid image_digest format."""
+    manifest: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "qdrant",
+                "category": "vector_store",
+                "official_source": "https://github.com/qdrant/qdrant",
+                "image_reference": "qdrant/qdrant:v1.15.4",
+                "pinned_version": "v1.15.4",
+                "estimated_size_bytes": 100000000,
+                "image_digest": "x",
+                "integrity_status": "VERIFIED",
+            }
+        ]
+    }
+    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    assert res.is_valid is False
+    assert any(b.code == BlockerCode.ARTIFACT_INTEGRITY_INVALID for b in res.blockers)
+
+
+def test_manifest_rejects_negative_or_non_integer_size_bytes(tmp_path: Path) -> None:
+    """Reject negative size_bytes, booleans, and numeric strings."""
+    manifest_neg: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "bge-m3",
+                "category": "embedding",
+                "files": [
+                    {
+                        "filename": "model.safetensors",
+                        "size_bytes": -100,
+                        "sha256": None,
+                        "integrity_status": "UNVERIFIED",
+                    }
+                ],
+            }
+        ]
+    }
+    res_neg = validate_manifest(manifest_neg, repo_root=tmp_path, model_dir=tmp_path / "models")
+    assert res_neg.is_valid is False
+    assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res_neg.blockers)
+
+    manifest_bool: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "bge-m3",
+                "category": "embedding",
+                "files": [
+                    {
+                        "filename": "model.safetensors",
+                        "size_bytes": True,
+                        "sha256": None,
+                        "integrity_status": "UNVERIFIED",
+                    }
+                ],
+            }
+        ]
+    }
+    res_bool = validate_manifest(manifest_bool, repo_root=tmp_path, model_dir=tmp_path / "models")
+    assert res_bool.is_valid is False
+    assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res_bool.blockers)
+
+
+def test_manifest_rejects_path_traversal_and_absolute_paths(tmp_path: Path) -> None:
+    """Reject filenames or target directories containing path traversal or absolute paths."""
+    manifest: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "bge-m3",
+                "category": "embedding",
+                "target_dir": "/tmp/absolute_escape",
+                "files": [
+                    {
+                        "filename": "../secret.txt",
+                        "size_bytes": 100,
+                        "sha256": None,
+                        "integrity_status": "UNVERIFIED",
+                    }
+                ],
+            }
+        ]
+    }
+    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    assert res.is_valid is False
+    assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res.blockers)
+
+
+def test_dependency_lock_rejects_comment_only_file(tmp_path: Path) -> None:
+    """A file containing only comments and a hash string is not a valid lock."""
+    lock_file = tmp_path / "requirements-lock.txt"
+    lock_file.write_text("# --hash=sha256:not-a-real-hash\n", encoding="utf-8")
+    ok, blockers = check_dependency_lock(tmp_path)
+    assert ok is False
+    assert any(b.code == BlockerCode.DEPENDENCY_LOCK_INCOMPLETE for b in blockers)
+
+
+def test_dependency_lock_rejects_unpinned_or_malformed_hashes(tmp_path: Path) -> None:
+    """Reject unpinned dependencies and malformed hash strings in lock."""
+    lock_file = tmp_path / "requirements-lock.txt"
+    lock_file.write_text("fastapi>=0.115.0 --hash=sha256:short\n", encoding="utf-8")
+    ok, blockers = check_dependency_lock(tmp_path)
+    assert ok is False
+    assert any(b.code == BlockerCode.DEPENDENCY_LOCK_INCOMPLETE for b in blockers)
+
+
+def test_dependency_lock_rejects_incomplete_package_coverage(tmp_path: Path) -> None:
+    """Reject lock file missing core runtime dependencies."""
+    lock_file = tmp_path / "requirements-lock.txt"
+    fake_hash = "a" * 64
+    lock_file.write_text(f"fastapi==0.115.0 --hash=sha256:{fake_hash}\n", encoding="utf-8")
+    ok, blockers = check_dependency_lock(tmp_path)
+    assert ok is False
+    assert any("missing required packages" in b.message for b in blockers)
+
+
+def test_dependency_lock_accepts_complete_verified_pins(tmp_path: Path) -> None:
+    """Accept lock file when all packages are pinned with valid hashes and resolution evidence."""
+    from scripts.provision_local_runtime import REQUIRED_RUNTIME_PACKAGES
+
+    lock_file = tmp_path / "requirements-lock.txt"
+    fake_hash = "a" * 64
+    lines = ["# Verified-Resolution: darwin-arm64-cp312"]
+    for pkg in REQUIRED_RUNTIME_PACKAGES:
+        lines.append(f"{pkg}==1.0.0 --hash=sha256:{fake_hash}")
+    lock_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    ok, blockers = check_dependency_lock(tmp_path)
+    assert ok is True
+    assert len(blockers) == 0
+
+
+def test_external_filesystem_deducts_verified_model_artifacts(tmp_path: Path) -> None:
+    """Verify local verified model files on an external mount are deducted from required space."""
+    model_mount = tmp_path / "ext_models"
+    repo_mount = tmp_path / "repo"
+    model_mount.mkdir()
+    repo_mount.mkdir()
+
+    target_model_dir = model_mount / "bge-m3"
+    target_model_dir.mkdir(parents=True)
+    f = target_model_dir / "model.safetensors"
+    content = b"sample-model-weights"
+    f.write_bytes(content)
+    file_sha = compute_file_sha256(f)
+    file_size = len(content)
+
+    manifest: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "bge-m3",
+                "category": "embedding",
+                "target_dir": "data/models/bge-m3",
+                "files": [
+                    {
+                        "filename": "model.safetensors",
+                        "size_bytes": file_size,
+                        "sha256": file_sha,
+                        "integrity_status": "VERIFIED",
+                    }
+                ],
+            }
+        ]
+    }
+    res = validate_manifest(manifest, repo_root=repo_mount, model_dir=model_mount)
+    assert res.existing_verified_bytes == file_size
+    assert res.net_model_artifact_bytes == 0
+
+    stat_model = MagicMock(st_dev=100)
+    stat_repo = MagicMock(st_dev=200)
+
+    def fake_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if "ext_models" in str(self):
+            return stat_model
+        return stat_repo
+
+    usage_model = shutil._ntuple_diskusage(
+        total=100 * GIB_BYTES, used=50 * GIB_BYTES, free=15 * GIB_BYTES
+    )
+    usage_repo = shutil._ntuple_diskusage(
+        total=50 * GIB_BYTES, used=10 * GIB_BYTES, free=40 * GIB_BYTES
+    )
+
+    def fake_usage(path: Any) -> Any:
+        if "ext_models" in str(path):
+            return usage_model
+        return usage_repo
+
+    with (
+        patch.object(Path, "stat", fake_stat),
+        patch("shutil.disk_usage", fake_usage),
+    ):
+        report = check_capacity(
+            repo_root=repo_mount,
+            model_dir=model_mount,
+            net_artifact_bytes=res.net_required_bytes,
+            net_model_artifact_bytes=res.net_model_artifact_bytes,
+            net_non_model_artifact_bytes=res.net_non_model_artifact_bytes,
+        )
+
+    # Net model artifact bytes is 0; required on model mount is strictly 10 GiB headroom
+    assert report.filesystems[0].required_bytes == RESERVED_HEADROOM_BYTES
+    assert report.filesystems[0].is_sufficient is True
 
 
 def test_apply_fails_closed_when_prerequisites_blocked(capsys: pytest.CaptureFixture[str]) -> None:
