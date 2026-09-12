@@ -5,7 +5,7 @@
     "tested_architecture": "darwin-arm64",
     "recommended_physical_cores": 8,
     "recommended_ram_gb": 16,
-    "available_disk_gb_required": 22.5,
+    "available_disk_gb_required": 22.33,
     "reserved_headroom_gb": 10.0
   },
   "artifacts": [
@@ -15,39 +15,51 @@
       "official_source": "https://huggingface.co/BAAI/bge-m3",
       "revision": "5617a9f61b028005a4858fdac845db406aefb181",
       "license": "Apache-2.0",
-      "estimated_size_bytes": 2257103138,
-      "estimated_size_human": "~2.26 GB",
+      "estimated_size_bytes": 2293315084,
+      "estimated_size_human": "~2.29 GB",
       "target_dir": "data/models/bge-m3",
       "files": [
         {
-          "filename": "config.json",
-          "size_bytes": 1008,
-          "sha256": null,
-          "integrity_status": "UNVERIFIED"
-        },
-        {
-          "filename": "model.safetensors",
-          "size_bytes": 2238610584,
-          "sha256": null,
-          "integrity_status": "UNVERIFIED"
+          "filename": "pytorch_model.bin",
+          "size_bytes": 2271145830,
+          "sha256": "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
+          "integrity_status": "VERIFIED",
+          "provenance": "Hugging Face Git LFS pointer oid at commit 5617a9f61b028005a4858fdac845db406aefb181"
         },
         {
           "filename": "tokenizer.json",
-          "size_bytes": 17094033,
+          "size_bytes": 17098108,
+          "sha256": "21106b6d7dab2952c1d496fb21d5dc9db75c28ed361a05f5020bbba27810dd08",
+          "integrity_status": "VERIFIED",
+          "provenance": "Hugging Face Git LFS pointer oid at commit 5617a9f61b028005a4858fdac845db406aefb181"
+        },
+        {
+          "filename": "sentencepiece.bpe.model",
+          "size_bytes": 5069051,
+          "sha256": "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865",
+          "integrity_status": "VERIFIED",
+          "provenance": "Hugging Face Git LFS pointer oid at commit 5617a9f61b028005a4858fdac845db406aefb181"
+        },
+        {
+          "filename": "config.json",
+          "size_bytes": 687,
           "sha256": null,
-          "integrity_status": "UNVERIFIED"
+          "integrity_status": "UNVERIFIED",
+          "provenance": "Upstream Git tree blob SHA-1 e6eda1c72da8f9dc30fdd9b69c73d35af3b7a7ad; no upstream SHA-256 published"
         },
         {
           "filename": "tokenizer_config.json",
-          "size_bytes": 1171,
+          "size_bytes": 444,
           "sha256": null,
-          "integrity_status": "UNVERIFIED"
+          "integrity_status": "UNVERIFIED",
+          "provenance": "Upstream Git tree blob SHA-1 dc69ac559dcba2694012009aaa108c614541789a; no upstream SHA-256 published"
         },
         {
           "filename": "special_tokens_map.json",
           "size_bytes": 964,
           "sha256": null,
-          "integrity_status": "UNVERIFIED"
+          "integrity_status": "UNVERIFIED",
+          "provenance": "Upstream Git tree blob SHA-1 b1879d702821e753ffe4245048eee415d54a9385; no upstream SHA-256 published"
         }
       ]
     },
@@ -55,28 +67,31 @@
       "id": "qwen3-vl-4b-gguf",
       "category": "multimodal_llm",
       "official_source": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF",
+      "revision": "1cd86afb9a95c410a6038ab3b40d8b578c892266",
       "license": "Apache-2.0",
-      "estimated_size_bytes": 3470000000,
-      "estimated_size_human": "~3.47 GB",
+      "estimated_size_bytes": 3333461920,
+      "estimated_size_human": "~3.33 GB",
       "target_dir": "data/models/qwen3-vl",
       "files": [
         {
-          "filename": "Qwen3-VL-4B-Instruct-Q4_K_M.gguf",
-          "size_bytes": 2580000000,
-          "sha256": null,
-          "integrity_status": "UNVERIFIED"
+          "filename": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+          "size_bytes": 2497281664,
+          "sha256": "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a",
+          "integrity_status": "VERIFIED",
+          "provenance": "Hugging Face Git LFS pointer oid at commit 1cd86afb9a95c410a6038ab3b40d8b578c892266"
         },
         {
-          "filename": "mmproj-Qwen3-VL-4B-Instruct-f16.gguf",
-          "size_bytes": 890000000,
-          "sha256": null,
-          "integrity_status": "UNVERIFIED"
+          "filename": "mmproj-Qwen3VL-4B-Instruct-F16.gguf",
+          "size_bytes": 836180256,
+          "sha256": "256f3a43bd4205ffef48d6b92715e1e70b5b0e9aef06522584967513a9985331",
+          "integrity_status": "VERIFIED",
+          "provenance": "Hugging Face Git LFS pointer oid at commit 1cd86afb9a95c410a6038ab3b40d8b578c892266"
         }
       ],
       "pinned_runtime_contract": {
         "release": "v0.4.0",
         "build": "b10809",
-        "commit": "5266f24",
+        "commit": "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
         "model_alias": "qwen3-vl-4b-instruct"
       }
     },
@@ -85,39 +100,42 @@
       "category": "ocr",
       "official_source": "https://github.com/PaddlePaddle/PaddleOCR",
       "license": "Apache-2.0",
-      "estimated_size_bytes": 15000000,
-      "estimated_size_human": "~15 MB",
+      "estimated_size_bytes": 15134720,
+      "estimated_size_human": "~15.13 MB",
       "detection": {
         "source_archive": "https://paddleocr.bj.bcebos.com/PP-OCRv4/english/en_PP-OCRv4_det_infer.tar",
         "archive_filename": "en_PP-OCRv4_det_infer.tar",
         "target_dir": "data/models/paddleocr/det",
-        "size_bytes": 4800000,
+        "size_bytes": 4894720,
         "sha256": null,
-        "integrity_status": "UNVERIFIED"
+        "integrity_status": "UNVERIFIED",
+        "provenance": "NONEXISTENT_UPSTREAM_404: en_PP-OCRv4_det_infer.tar returns HTTP 404; official PP-OCRv4 detection is ch_PP-OCRv4_det_infer.tar (4894720 bytes, ETag/MD5 bbc541a36ae5fe2f5e873d1e16f81c20); no upstream SHA-256 published"
       },
       "recognition": {
         "source_archive": "https://paddleocr.bj.bcebos.com/PP-OCRv4/english/en_PP-OCRv4_rec_infer.tar",
         "archive_filename": "en_PP-OCRv4_rec_infer.tar",
         "target_dir": "data/models/paddleocr/rec",
-        "size_bytes": 10200000,
+        "size_bytes": 10240000,
         "sha256": null,
-        "integrity_status": "UNVERIFIED"
+        "integrity_status": "UNVERIFIED",
+        "provenance": "Upstream Baidu BOS publishes HTTP ETag/MD5 88bb7268e04b2f76b445551ce7a0b524; no upstream SHA-256 published"
       }
     },
     {
       "id": "llama-server",
       "category": "inference_server",
-      "official_source": "https://github.com/ggerganov/llama.cpp",
+      "official_source": "https://github.com/ggml-org/llama.cpp",
       "license": "MIT",
       "pinned_release": "v0.4.0",
       "pinned_build": "b10809",
-      "pinned_commit": "5266f24",
+      "pinned_commit": "5266f24da75dc449bd56cbed7addb9c8e4a6a73e",
       "target_binary": "llama-server",
       "target_architecture": "darwin-arm64",
-      "estimated_size_bytes": 55000000,
-      "estimated_size_human": "~55 MB",
+      "estimated_size_bytes": 11123196,
+      "estimated_size_human": "~11.12 MB",
       "sha256": null,
-      "integrity_status": "UNVERIFIED"
+      "integrity_status": "UNVERIFIED",
+      "provenance": "Asset llama-b10809-bin-macos-arm64.tar.gz published on GitHub release b10809 (size 11123196 bytes); no standalone SHA-256 published in release assets"
     },
     {
       "id": "qdrant",
@@ -126,10 +144,11 @@
       "license": "Apache-2.0",
       "pinned_version": "v1.15.4",
       "image_reference": "qdrant/qdrant:v1.15.4",
-      "image_digest": null,
-      "integrity_status": "UNVERIFIED",
-      "estimated_size_bytes": 100000000,
-      "estimated_size_human": "~100 MB",
+      "image_digest": "sha256:cc374f58d68768be3b83a78c2d57782eb1661e5c9c63e7c495d40c76c539f469",
+      "integrity_status": "VERIFIED",
+      "provenance": "Docker Hub OCI image manifest digest for linux/arm64 (multi-platform index: sha256:6ac4807063bbecddca0250bfbcff52acf18c22263b904d12919349e6d0a408f1)",
+      "estimated_size_bytes": 65266145,
+      "estimated_size_human": "~65.27 MB",
       "default_url": "http://localhost:6333",
       "client_compatibility": "qdrant-client>=1.15.0,<1.16.0"
     }

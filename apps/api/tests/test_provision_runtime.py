@@ -808,3 +808,77 @@ def test_format_report_structure() -> None:
     assert "Reserved Headroom:" in text
     assert "--- ACTIVE BLOCKERS" in text
     assert "ARTIFACT_INTEGRITY_UNVERIFIED" in text
+
+
+def test_manifest_contains_verified_upstream_metadata_and_correct_filenames() -> None:
+    """Verify that authoritative manifest contains reconciled upstream identities and digests."""
+    from scripts.provision_local_runtime import DEFAULT_MANIFEST_PATH, load_manifest
+
+    manifest = load_manifest(DEFAULT_MANIFEST_PATH)
+    artifacts = {a["id"]: a for a in manifest["artifacts"]}
+
+    # 1. BGE-M3
+    bge = artifacts["bge-m3"]
+    bge_files = {f["filename"]: f for f in bge["files"]}
+    assert "pytorch_model.bin" in bge_files
+    assert "model.safetensors" not in bge_files  # Corrected from guessed name
+    assert bge_files["pytorch_model.bin"]["size_bytes"] == 2271145830
+    assert (
+        bge_files["pytorch_model.bin"]["sha256"]
+        == "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38"
+    )
+    assert bge_files["pytorch_model.bin"]["integrity_status"] == "VERIFIED"
+    assert bge_files["config.json"]["integrity_status"] == "UNVERIFIED"
+
+    # 2. Qwen3-VL
+    qwen = artifacts["qwen3-vl-4b-gguf"]
+    qwen_files = {f["filename"]: f for f in qwen["files"]}
+    assert "Qwen3VL-4B-Instruct-Q4_K_M.gguf" in qwen_files
+    assert "mmproj-Qwen3VL-4B-Instruct-F16.gguf" in qwen_files
+    assert qwen_files["Qwen3VL-4B-Instruct-Q4_K_M.gguf"]["size_bytes"] == 2497281664
+    assert (
+        qwen_files["Qwen3VL-4B-Instruct-Q4_K_M.gguf"]["sha256"]
+        == "66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a"
+    )
+    assert qwen_files["mmproj-Qwen3VL-4B-Instruct-F16.gguf"]["size_bytes"] == 836180256
+    assert (
+        qwen_files["mmproj-Qwen3VL-4B-Instruct-F16.gguf"]["sha256"]
+        == "256f3a43bd4205ffef48d6b92715e1e70b5b0e9aef06522584967513a9985331"
+    )
+
+    # 3. PaddleOCR
+    ocr = artifacts["paddleocr-v4-en"]
+    assert ocr["detection"]["integrity_status"] == "UNVERIFIED"
+    assert ocr["detection"]["sha256"] is None
+    assert ocr["recognition"]["integrity_status"] == "UNVERIFIED"
+    assert ocr["recognition"]["sha256"] is None
+
+    # 4. llama-server
+    llama = artifacts["llama-server"]
+    assert llama["target_binary"] == "llama-server"
+    assert llama["estimated_size_bytes"] == 11123196
+    assert llama["integrity_status"] == "UNVERIFIED"
+    assert llama["sha256"] is None
+
+    # 5. Qdrant
+    qdrant = artifacts["qdrant"]
+    assert (
+        qdrant["image_digest"]
+        == "sha256:cc374f58d68768be3b83a78c2d57782eb1661e5c9c63e7c495d40c76c539f469"
+    )
+    assert qdrant["integrity_status"] == "VERIFIED"
+    assert qdrant["estimated_size_bytes"] == 65266145
+
+
+def test_authoritative_manifest_retains_fail_closed_blocking() -> None:
+    """The authoritative manifest must remain fail-closed BLOCKED due to unverified items."""
+    from scripts.provision_local_runtime import DEFAULT_MANIFEST_PATH, load_manifest
+
+    manifest = load_manifest(DEFAULT_MANIFEST_PATH)
+    res = validate_manifest(manifest, repo_root=REPO_ROOT, model_dir=REPO_ROOT / "data" / "models")
+    assert res.is_valid is False
+    assert len(res.blockers) > 0
+    assert any(b.code == BlockerCode.ARTIFACT_INTEGRITY_UNVERIFIED for b in res.blockers)
+
+    report = assess_readiness()
+    assert report.status == "BLOCKED"
