@@ -206,13 +206,16 @@ def test_existing_verified_artifacts_deduplication(tmp_path: Path) -> None:
                         "size_bytes": file_size,
                         "sha256": expected_sha,
                         "integrity_status": "VERIFIED",
+                        "provenance": "https://example.com/weights.sha256",
                     }
                 ],
             }
         ]
     }
 
-    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=model_dir)
+    res = validate_manifest(
+        manifest, repo_root=tmp_path, model_dir=model_dir, require_all_categories=False
+    )
     assert res.is_valid is True
     assert len(res.blockers) == 0
     assert res.total_manifest_bytes == file_size
@@ -245,6 +248,7 @@ def test_manifest_fails_on_unverified_or_invalid_integrity(tmp_path: Path) -> No
                         "size_bytes": 100,
                         "sha256": "not-a-valid-hex-digest",
                         "integrity_status": "VERIFIED",
+                        "provenance": "test",
                     }
                 ],
             },
@@ -259,7 +263,12 @@ def test_manifest_fails_on_unverified_or_invalid_integrity(tmp_path: Path) -> No
         ]
     }
 
-    res = validate_manifest(manifest_unverified, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res = validate_manifest(
+        manifest_unverified,
+        repo_root=tmp_path,
+        model_dir=tmp_path / "models",
+        require_all_categories=False,
+    )
     assert res.is_valid is False
     codes = [b.code for b in res.blockers]
     assert BlockerCode.ARTIFACT_INTEGRITY_UNVERIFIED in codes
@@ -278,7 +287,9 @@ def test_dependency_lock_incomplete_check(tmp_path: Path) -> None:
 def test_manifest_rejects_empty_artifact_object(tmp_path: Path) -> None:
     """Reject empty artifact objects."""
     manifest: dict[str, Any] = {"artifacts": [{}]}
-    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res = validate_manifest(
+        manifest, repo_root=tmp_path, model_dir=tmp_path / "models", require_all_categories=False
+    )
     assert res.is_valid is False
     assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res.blockers)
 
@@ -295,7 +306,9 @@ def test_manifest_rejects_embedding_with_empty_files(tmp_path: Path) -> None:
             }
         ]
     }
-    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res = validate_manifest(
+        manifest, repo_root=tmp_path, model_dir=tmp_path / "models", require_all_categories=False
+    )
     assert res.is_valid is False
     assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res.blockers)
 
@@ -315,10 +328,13 @@ def test_manifest_rejects_inference_binary_with_invalid_sha256(tmp_path: Path) -
                 "estimated_size_bytes": 55000000,
                 "sha256": "x",
                 "integrity_status": "VERIFIED",
+                "provenance": "upstream",
             }
         ]
     }
-    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res = validate_manifest(
+        manifest, repo_root=tmp_path, model_dir=tmp_path / "models", require_all_categories=False
+    )
     assert res.is_valid is False
     assert any(b.code == BlockerCode.ARTIFACT_INTEGRITY_INVALID for b in res.blockers)
 
@@ -336,10 +352,13 @@ def test_manifest_rejects_qdrant_with_invalid_image_digest(tmp_path: Path) -> No
                 "estimated_size_bytes": 100000000,
                 "image_digest": "x",
                 "integrity_status": "VERIFIED",
+                "provenance": "upstream",
             }
         ]
     }
-    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res = validate_manifest(
+        manifest, repo_root=tmp_path, model_dir=tmp_path / "models", require_all_categories=False
+    )
     assert res.is_valid is False
     assert any(b.code == BlockerCode.ARTIFACT_INTEGRITY_INVALID for b in res.blockers)
 
@@ -362,7 +381,12 @@ def test_manifest_rejects_negative_or_non_integer_size_bytes(tmp_path: Path) -> 
             }
         ]
     }
-    res_neg = validate_manifest(manifest_neg, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res_neg = validate_manifest(
+        manifest_neg,
+        repo_root=tmp_path,
+        model_dir=tmp_path / "models",
+        require_all_categories=False,
+    )
     assert res_neg.is_valid is False
     assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res_neg.blockers)
 
@@ -382,7 +406,12 @@ def test_manifest_rejects_negative_or_non_integer_size_bytes(tmp_path: Path) -> 
             }
         ]
     }
-    res_bool = validate_manifest(manifest_bool, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res_bool = validate_manifest(
+        manifest_bool,
+        repo_root=tmp_path,
+        model_dir=tmp_path / "models",
+        require_all_categories=False,
+    )
     assert res_bool.is_valid is False
     assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res_bool.blockers)
 
@@ -406,7 +435,9 @@ def test_manifest_rejects_path_traversal_and_absolute_paths(tmp_path: Path) -> N
             }
         ]
     }
-    res = validate_manifest(manifest, repo_root=tmp_path, model_dir=tmp_path / "models")
+    res = validate_manifest(
+        manifest, repo_root=tmp_path, model_dir=tmp_path / "models", require_all_categories=False
+    )
     assert res.is_valid is False
     assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res.blockers)
 
@@ -439,20 +470,202 @@ def test_dependency_lock_rejects_incomplete_package_coverage(tmp_path: Path) -> 
     assert any("missing required packages" in b.message for b in blockers)
 
 
-def test_dependency_lock_accepts_complete_verified_pins(tmp_path: Path) -> None:
-    """Accept lock file when all packages are pinned with valid hashes and resolution evidence."""
+def test_fabricated_lock_with_comment_cannot_become_ready(tmp_path: Path) -> None:
+    """A lock file with fabricated pins and comment cannot become READY."""
     from scripts.provision_local_runtime import REQUIRED_RUNTIME_PACKAGES
 
     lock_file = tmp_path / "requirements-lock.txt"
     fake_hash = "a" * 64
     lines = ["# Verified-Resolution: darwin-arm64-cp312"]
     for pkg in REQUIRED_RUNTIME_PACKAGES:
-        lines.append(f"{pkg}==1.0.0 --hash=sha256:{fake_hash}")
+        lines.append(f"{pkg}==0.0.0 --hash=sha256:{fake_hash}")
     lock_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     ok, blockers = check_dependency_lock(tmp_path)
-    assert ok is True
-    assert len(blockers) == 0
+    assert ok is False
+    assert any(b.code == BlockerCode.DEPENDENCY_LOCK_INCOMPLETE for b in blockers)
+
+
+def test_dependency_lock_parser_supports_continuations_extras_and_markers(tmp_path: Path) -> None:
+    """Dependency lock parser supports standard line continuations, extras, and markers."""
+    from scripts.provision_local_runtime import parse_dependency_lock_requirements
+
+    content = (
+        "# Comment header\n"
+        "fastapi[all]==0.115.0 \\\n"
+        "    --hash=sha256:" + ("a" * 64) + " \\\n"
+        "    --hash=sha256:" + ("b" * 64) + "\n"
+        "torch==2.3.0; sys_platform == 'darwin' \\\n"
+        "    --hash=sha256:" + ("c" * 64) + "\n"
+    )
+    is_valid, found_pkgs, errors = parse_dependency_lock_requirements(content)
+    assert is_valid is True
+    assert "fastapi" in found_pkgs
+    assert "torch" in found_pkgs
+    assert len(errors) == 0
+
+
+def test_manifest_rejects_verified_status_when_provenance_is_missing(tmp_path: Path) -> None:
+    """Require recorded upstream checksum provenance before accepting VERIFIED status."""
+    valid_hash = "a" * 64
+    manifest: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "bge-m3",
+                "category": "embedding",
+                "official_source": "https://huggingface.co/BAAI/bge-m3",
+                "files": [
+                    {
+                        "filename": "model.safetensors",
+                        "size_bytes": 1000,
+                        "sha256": valid_hash,
+                        "integrity_status": "VERIFIED",
+                        # provenance is omitted / None
+                    }
+                ],
+            }
+        ]
+    }
+    res = validate_manifest(
+        manifest,
+        repo_root=tmp_path,
+        model_dir=tmp_path / "models",
+        require_all_categories=False,
+    )
+    assert res.is_valid is False
+    assert any(
+        b.code == BlockerCode.ARTIFACT_INTEGRITY_UNVERIFIED and "provenance" in b.message.lower()
+        for b in res.blockers
+    )
+
+
+def test_assess_readiness_requires_manifest_version_unconditionally(
+    tmp_path: Path,
+) -> None:
+    """Production readiness path unconditionally requires manifest_version and all categories."""
+    manifest_file = tmp_path / "partial_manifest.json"
+    manifest_content = {
+        # manifest_version intentionally omitted
+        "artifacts": [
+            {
+                "id": "bge-m3",
+                "category": "embedding",
+                "official_source": "https://huggingface.co/BAAI/bge-m3",
+                "files": [
+                    {
+                        "filename": "model.safetensors",
+                        "size_bytes": 1000,
+                        "sha256": None,
+                        "integrity_status": "UNVERIFIED",
+                    }
+                ],
+            }
+        ]
+    }
+    import json
+
+    manifest_file.write_text(json.dumps(manifest_content), encoding="utf-8")
+
+    report = assess_readiness(
+        manifest_path=manifest_file,
+        repo_root=tmp_path,
+        model_dir=tmp_path / "models",
+    )
+    assert report.status == "BLOCKED"
+    messages = " ".join(b.message for b in report.blockers)
+    assert "manifest_version" in messages.lower()
+    assert "missing required runtime categories" in messages.lower()
+
+
+def test_main_json_output_with_malformed_manifest_does_not_crash(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """main(['--json']) with malformed synthetic manifests returns valid JSON without traceback."""
+    import json
+
+    bad_manifest = tmp_path / "bad_manifest.json"
+    bad_manifest.write_text(
+        json.dumps(
+            {
+                "manifest_version": 1,
+                "artifacts": [
+                    {
+                        "id": "bge-m3",
+                        "category": "embedding",
+                        "files": [
+                            {
+                                "filename": "model.safetensors",
+                                "size_bytes": -100,  # triggers ValueError in Pydantic
+                                "sha256": None,
+                                "integrity_status": "UNVERIFIED",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["--dry-run", "--json", "--manifest", str(bad_manifest)])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    parsed = json.loads(captured.out)
+    assert parsed["status"] == "BLOCKED"
+    assert len(parsed["blockers"]) > 0
+
+
+def test_artifact_id_path_traversal_is_blocked_and_out_of_root_files_never_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Validate identifiers and destinations: out-of-root paths must be rejected and never read."""
+    model_dir = tmp_path / "data" / "models"
+    model_dir.mkdir(parents=True)
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir(parents=True)
+
+    secret_file = outside_dir / "weights.safetensors"
+    secret_file.write_bytes(b"forbidden-content-never-read")
+
+    manifest: dict[str, Any] = {
+        "artifacts": [
+            {
+                "id": "../outside_dir",
+                "category": "embedding",
+                "files": [
+                    {
+                        "filename": "weights.safetensors",
+                        "size_bytes": len(b"forbidden-content-never-read"),
+                        "sha256": "a" * 64,
+                        "integrity_status": "VERIFIED",
+                        "provenance": "upstream",
+                    }
+                ],
+            }
+        ]
+    }
+
+    # Spy on compute_file_sha256: it must NEVER be called on secret_file
+    read_paths: list[Path] = []
+    real_compute = compute_file_sha256
+
+    def spy_compute(p: Path, *args: Any, **kwargs: Any) -> str:
+        read_paths.append(p.resolve())
+        return real_compute(p, *args, **kwargs)
+
+    monkeypatch.setattr("scripts.provision_local_runtime.compute_file_sha256", spy_compute)
+
+    res = validate_manifest(
+        manifest,
+        repo_root=tmp_path,
+        model_dir=model_dir,
+        require_all_categories=False,
+    )
+    assert res.is_valid is False
+    assert any(b.code == BlockerCode.MANIFEST_INVALID for b in res.blockers)
+    # Crucial guarantee: secret_file was NEVER read or hashed
+    assert secret_file.resolve() not in read_paths
 
 
 def test_external_filesystem_deducts_verified_model_artifacts(tmp_path: Path) -> None:
@@ -482,12 +695,18 @@ def test_external_filesystem_deducts_verified_model_artifacts(tmp_path: Path) ->
                         "size_bytes": file_size,
                         "sha256": file_sha,
                         "integrity_status": "VERIFIED",
+                        "provenance": "https://example.com/bge-m3.sha256",
                     }
                 ],
             }
         ]
     }
-    res = validate_manifest(manifest, repo_root=repo_mount, model_dir=model_mount)
+    res = validate_manifest(
+        manifest,
+        repo_root=repo_mount,
+        model_dir=model_mount,
+        require_all_categories=False,
+    )
     assert res.existing_verified_bytes == file_size
     assert res.net_model_artifact_bytes == 0
 
