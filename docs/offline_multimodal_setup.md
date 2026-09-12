@@ -45,6 +45,27 @@ Do not proceed if any digest fails validation against the authoritative signed m
 
 ---
 
+## 2.1 Runtime Provisioning Guardrails & Dry-Run Assessment
+
+KoshShield AI provides automated, strictly read-only guardrail assessment via `scripts/provision_local_runtime.py` (`make provision-runtime`).
+
+### Guardrail Verification Rules
+1. **Default Read-Only Dry-Run**: Invoking `provision_local_runtime.py` without arguments or with `--dry-run` performs read-only checks without network calls, package installations, container pulls, or filesystem mutations.
+2. **Fail-Closed Integrity Validation**: Artifacts listed in `docs/runtime_artifacts_manifest.json` must specify exact filenames, sizes, and verified SHA-256 digests. Any artifact with unverified or missing digests (`integrity_status != "VERIFIED"`) blocks provisioning with `ARTIFACT_INTEGRITY_UNVERIFIED`.
+3. **Capacity & 10 GiB Headroom**: Capacity checks evaluate integer bytes and 1024-based GiB conversions. Nonexistent model directories are evaluated against their nearest existing parent without creating directories. The check accounts for:
+   - Net model and artifact bytes (~5.49 GiB)
+   - Estimated Python dependencies (~2.50 GiB)
+   - Estimated temporary extraction space (~2.00 GiB)
+   - Estimated Docker storage growth (~1.50 GiB)
+   - Estimated runtime caches (~1.00 GiB)
+   - Mandatory reserved headroom of 10.00 GiB (10,737,418,240 bytes)
+   Total required capacity on a single filesystem is ~22.49 GiB. If available space is below this threshold, the check reports `CAPACITY_INSUFFICIENT` with exact deficit metrics.
+4. **Multi-Filesystem Accounting**: Specifying an external `--model-dir` isolates model storage requirements from repository and Docker requirements. The external filesystem must retain 10 GiB headroom above model weights, while the local filesystem must retain 10 GiB headroom above Python dependencies, Docker layers, and temporary extraction buffers.
+5. **Dependency Lock Verification**: Provisioning verifies that a complete, hash-pinned dependency lock exists. Untracked wheel directories or unpinned pyproject ranges fail with `DEPENDENCY_LOCK_INCOMPLETE`.
+6. **Apply Behavior**: `--apply` enforces all prerequisite checks before any side effect. If prerequisites are blocked, it exits nonzero (exit code 1). When prerequisites pass, actual automated downloading remains unimplemented in this checkpoint and exits with `APPLY_NOT_IMPLEMENTED` (exit code 2). Stage 0 remains incomplete.
+
+---
+
 ## 3. Starting the Local `llama-server`
 
 KoshShield AI requires `llama-server` from **`llama.cpp` release `v0.4.0` (build `b10809`, commit `5266f24`)** running locally on loopback (`127.0.0.1` or `localhost`) or an explicit container service name (`llama-server`).
