@@ -577,6 +577,25 @@ def test_assess_readiness_requires_manifest_version_unconditionally(
     assert "missing required runtime categories" in messages.lower()
 
 
+@pytest.mark.parametrize(
+    ("manifest_version", "expected_version_error"),
+    [(1, False), (True, True), (False, True), (1.0, True), ("1", True), (None, True), (2, True)],
+)
+def test_manifest_version_requires_supported_integer(
+    tmp_path: Path, manifest_version: Any, expected_version_error: bool
+) -> None:
+    result = validate_manifest(
+        {"manifest_version": manifest_version, "artifacts": []},
+        repo_root=tmp_path,
+        model_dir=tmp_path / "models",
+    )
+    has_version_error = any(
+        b.code == BlockerCode.MANIFEST_INVALID and "manifest_version" in b.message
+        for b in result.blockers
+    )
+    assert has_version_error is expected_version_error
+
+
 def test_main_json_output_with_malformed_manifest_does_not_crash(
     capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:

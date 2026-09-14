@@ -681,7 +681,11 @@ def validate_manifest(
 
     if require_all_categories:
         m_version = manifest.get("manifest_version")
-        if m_version is None or m_version != 1:
+        if (
+            not isinstance(m_version, int)
+            or isinstance(m_version, bool)
+            or m_version != 1
+        ):
             blockers.append(
                 Blocker(
                     code=BlockerCode.MANIFEST_INVALID,
