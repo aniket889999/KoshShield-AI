@@ -505,6 +505,25 @@ def test_dependency_lock_parser_supports_continuations_extras_and_markers(tmp_pa
     assert len(errors) == 0
 
 
+@pytest.mark.parametrize(
+    ("version", "expected_valid"),
+    [("0.115.*", False), ("1.*", False), ("0.115.0", True), ("2.3.0+cpu", True), ("1.0rc1", True)],
+)
+def test_dependency_lock_parser_requires_exact_version(version: str, expected_valid: bool) -> None:
+    from scripts.provision_local_runtime import parse_dependency_lock_requirements
+
+    content = f"example-package=={version} --hash=sha256:{'a' * 64}\n"
+    is_valid, packages, errors = parse_dependency_lock_requirements(content)
+
+    assert is_valid is expected_valid
+    if expected_valid:
+        assert packages == {"example-package"}
+        assert errors == []
+    else:
+        assert packages == set()
+        assert any("exact '==' version" in error for error in errors)
+
+
 def test_manifest_rejects_verified_status_when_provenance_is_missing(tmp_path: Path) -> None:
     """Require recorded upstream checksum provenance before accepting VERIFIED status."""
     valid_hash = "a" * 64

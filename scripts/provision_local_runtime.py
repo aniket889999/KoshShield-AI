@@ -571,7 +571,11 @@ def parse_dependency_lock_requirements(
             continue
 
         clauses = list(req.specifier)
-        if len(clauses) != 1 or clauses[0].operator != "==":
+        if (
+            len(clauses) != 1
+            or clauses[0].operator != "=="
+            or "*" in clauses[0].version
+        ):
             errors.append(
                 f"Package '{req.name}' must be pinned with exact '==' version, got '{req.specifier}'"
             )
