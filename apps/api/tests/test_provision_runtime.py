@@ -654,6 +654,37 @@ def test_main_json_output_with_malformed_manifest_does_not_crash(
     assert len(parsed["blockers"]) > 0
 
 
+@pytest.mark.parametrize("failure_kind", ["missing_manifest", "invalid_json", "assessment_error"])
+def test_main_json_output_preserves_assessment_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure_kind: str,
+) -> None:
+    import json
+
+    manifest_path = tmp_path / "manifest.json"
+    if failure_kind == "invalid_json":
+        manifest_path.write_text("{", encoding="utf-8")
+    elif failure_kind == "assessment_error":
+
+        def fail_assessment(**kwargs: Any) -> None:
+            raise OSError("synthetic-private-detail")
+
+        monkeypatch.setattr("scripts.provision_local_runtime.assess_readiness", fail_assessment)
+
+    exit_code = main(["--dry-run", "--json", "--manifest", str(manifest_path)])
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    report = json.loads(captured.out)
+    assert report["mode"] == "dry-run"
+    assert report["status"] == "BLOCKED"
+    assert report["blockers"][0]["code"] == "ASSESSMENT_FAILED"
+    assert "synthetic-private-detail" not in captured.out
+    assert str(manifest_path) not in captured.out
+    assert captured.err == ""
+
+
 def test_artifact_id_path_traversal_is_blocked_and_out_of_root_files_never_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

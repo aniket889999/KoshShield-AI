@@ -77,6 +77,7 @@ REQUIRED_RUNTIME_PACKAGES = {
 
 
 class BlockerCode(StrEnum):
+    ASSESSMENT_FAILED = "ASSESSMENT_FAILED"
     CAPACITY_INSUFFICIENT = "CAPACITY_INSUFFICIENT"
     CAPACITY_CHECK_FAILED = "CAPACITY_CHECK_FAILED"
     ARTIFACT_INTEGRITY_UNVERIFIED = "ARTIFACT_INTEGRITY_UNVERIFIED"
@@ -1497,7 +1498,19 @@ def main(argv: list[str] | None = None) -> int:
             mode=mode,
         )
     except (ValueError, OSError, RuntimeError, json.JSONDecodeError) as err:
-        print(f"FATAL: Provisioning assessment failed: {err}", file=sys.stderr)
+        if args.json:
+            failure = Blocker(
+                code=BlockerCode.ASSESSMENT_FAILED,
+                message="Provisioning assessment could not be completed.",
+            )
+            print(
+                json.dumps(
+                    {"mode": mode, "status": "BLOCKED", "blockers": [asdict(failure)]},
+                    indent=2,
+                )
+            )
+        else:
+            print(f"FATAL: Provisioning assessment failed: {err}", file=sys.stderr)
         return 1
 
     if args.json:
