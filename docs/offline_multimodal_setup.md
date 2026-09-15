@@ -49,6 +49,11 @@ Do not proceed if any digest fails validation against the authoritative signed m
 
 KoshShield AI provides automated, strictly read-only guardrail assessment via `scripts/provision_local_runtime.py` (`make provision-runtime`).
 
+For local Python wheel inspection and explicit resolver-only preparation, see
+[Offline Python dependency preparation](offline_dependency_preparation.md).
+This produces consistency evidence without installing packages; it does not
+complete the real-model integration prerequisites.
+
 ### Guardrail Verification Rules
 1. **Default Read-Only Dry-Run**: Invoking `provision_local_runtime.py` without arguments or with `--dry-run` performs read-only checks without network calls, package installations, container pulls, or filesystem mutations.
 2. **Fail-Closed Integrity Validation**: Artifacts listed in `docs/runtime_artifacts_manifest.json` must specify exact filenames, sizes, and verified SHA-256 digests. Any artifact with unverified or missing digests (`integrity_status != "VERIFIED"`) blocks provisioning with `ARTIFACT_INTEGRITY_UNVERIFIED`.

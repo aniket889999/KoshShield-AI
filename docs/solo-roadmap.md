@@ -1,5 +1,15 @@
 # Solo development roadmap
 
+## Current runtime preparation checkpoint (2026-09-15)
+
+- Offline wheel inventory and interpreter compatibility checks are implemented.
+- An explicit, network-blocked pip dry-run can generate exact locks and local resolution evidence.
+- Readiness validates that evidence without subprocesses and rejects stale or inconsistent inputs.
+- Synthetic-wheel resolver tests are executed; the real project wheel cache is incomplete.
+- No Python packages or model artifacts were installed for this checkpoint.
+- Stage 0 remains incomplete pending approved acquisition, capacity checks and real-model smoke tests.
+- Operator workflow: [Offline dependency preparation](offline_dependency_preparation.md).
+
 ## Milestone 0: foundation
 
 - Next.js and FastAPI applications run locally.
