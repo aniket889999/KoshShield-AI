@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 import hashlib
+import platform
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
+import tomllib
+from packaging.markers import default_environment
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.tags import sys_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
 MAX_METADATA_BYTES = 1024 * 1024
+MODEL_REQUIREMENTS = (
+    "FlagEmbedding",
+    "transformers",
+    "torch",
+    "paddlepaddle",
+    "paddleocr",
+)
 
 
 class DependencyPreparationError(ValueError):
@@ -99,3 +112,76 @@ def inventory_wheels(wheelhouse: Path) -> list[WheelInfo]:
     if not paths:
         raise DependencyPreparationError("WHEELHOUSE_EMPTY")
     return [inspect_wheel(path, wheelhouse) for path in paths]
+
+
+def local_requirement(text: str) -> Requirement:
+    try:
+        requirement = Requirement(text)
+    except InvalidRequirement as exc:
+        raise DependencyPreparationError("REQUIREMENT_INVALID") from exc
+    if requirement.url is not None:
+        raise DependencyPreparationError("DIRECT_REFERENCE_FORBIDDEN")
+    return requirement
+
+
+def runtime_requirements(repo_root: Path) -> tuple[str, ...]:
+    project = tomllib.loads(
+        (repo_root / "apps/api/pyproject.toml").read_text(encoding="utf-8")
+    )
+    dependencies = project["project"]["dependencies"]
+    if not isinstance(dependencies, list) or not all(
+        isinstance(item, str) for item in dependencies
+    ):
+        raise DependencyPreparationError("PROJECT_DEPENDENCIES_INVALID")
+    return tuple(
+        sorted(
+            {
+                str(local_requirement(item))
+                for item in [*dependencies, *MODEL_REQUIREMENTS]
+            }
+        )
+    )
+
+
+def compatible_wheels(
+    wheels: list[WheelInfo],
+    supported_tags: set[str] | None = None,
+    python_version: str | None = None,
+) -> list[WheelInfo]:
+    tags = (
+        supported_tags
+        if supported_tags is not None
+        else {str(tag) for tag in sys_tags()}
+    )
+    version = python_version or platform.python_version()
+    compatible = []
+    for wheel in wheels:
+        for requirement in wheel.requirements:
+            local_requirement(requirement)
+        try:
+            python_compatible = SpecifierSet(wheel.requires_python).contains(
+                version, prereleases=True
+            )
+        except InvalidSpecifier as exc:
+            raise DependencyPreparationError("REQUIRES_PYTHON_INVALID") from exc
+        if wheel.tags & tags and python_compatible:
+            compatible.append(wheel)
+    return compatible
+
+
+def missing_root_requirements(
+    wheels: list[WheelInfo], roots: tuple[str, ...]
+) -> list[str]:
+    environment = {**default_environment(), "extra": ""}
+    missing = []
+    for text in roots:
+        requirement = local_requirement(text)
+        if requirement.marker and not requirement.marker.evaluate(environment):
+            continue
+        if not any(
+            wheel.name == canonicalize_name(requirement.name)
+            and requirement.specifier.contains(wheel.version, prereleases=True)
+            for wheel in wheels
+        ):
+            missing.append(str(requirement))
+    return sorted(missing)

@@ -15,8 +15,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.runtime_dependencies import (  # noqa: E402
     DependencyPreparationError,
+    compatible_wheels,
     inspect_wheel,
     inventory_wheels,
+    local_requirement,
+    missing_root_requirements,
+    runtime_requirements,
 )
 
 
@@ -79,3 +83,40 @@ def test_symlink_wheel_is_not_read(tmp_path: Path) -> None:
     link.symlink_to(outside)
     with pytest.raises(DependencyPreparationError, match="WHEEL_PATH_UNSAFE"):
         inspect_wheel(link, root)
+
+
+def test_compatibility_filters_python_and_platform(tmp_path: Path) -> None:
+    make_wheel(tmp_path, name="usable")
+    make_wheel(tmp_path, name="future", requires_python=">=99")
+    make_wheel(tmp_path, name="foreign", tag="cp27-none-win32")
+    wheels = compatible_wheels(inventory_wheels(tmp_path), {"py3-none-any"}, "3.12.0")
+    assert [wheel.name for wheel in wheels] == ["usable"]
+    assert missing_root_requirements(wheels, ("usable>=1", "missing", "usable>=2")) == [
+        "missing",
+        "usable>=2",
+    ]
+
+
+@pytest.mark.parametrize("reference", ["https://example.invalid/pkg.whl", "file:///tmp/pkg.whl"])
+def test_direct_references_are_rejected_in_roots_and_wheel_metadata(
+    tmp_path: Path,
+    reference: str,
+) -> None:
+    requirement = f"child @ {reference}"
+    with pytest.raises(DependencyPreparationError, match="DIRECT_REFERENCE_FORBIDDEN"):
+        local_requirement(requirement)
+    make_wheel(tmp_path, requirements=(requirement,))
+    with pytest.raises(DependencyPreparationError, match="DIRECT_REFERENCE_FORBIDDEN"):
+        compatible_wheels(inventory_wheels(tmp_path))
+
+
+def test_project_constraints_are_preserved_and_models_added(tmp_path: Path) -> None:
+    project = tmp_path / "apps/api/pyproject.toml"
+    project.parent.mkdir(parents=True)
+    project.write_text(
+        '[project]\ndependencies = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.34"]\n'
+    )
+    requirements = runtime_requirements(tmp_path)
+    assert "fastapi<1,>=0.115" in requirements
+    assert "uvicorn[standard]>=0.34" in requirements
+    assert set(("FlagEmbedding", "torch", "paddleocr", "transformers")) <= set(requirements)
