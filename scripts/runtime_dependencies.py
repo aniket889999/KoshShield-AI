@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import platform
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
@@ -26,6 +31,17 @@ MODEL_REQUIREMENTS = (
     "paddlepaddle",
     "paddleocr",
 )
+
+OFFLINE_PIP_BOOTSTRAP = """import runpy, socket, sys
+def deny_network(*args, **kwargs):
+    raise OSError("OFFLINE_NETWORK_FORBIDDEN")
+socket.socket.connect = deny_network
+socket.socket.connect_ex = deny_network
+socket.create_connection = deny_network
+socket.getaddrinfo = deny_network
+sys.argv = ["pip", *sys.argv[1:]]
+runpy.run_module("pip", run_name="__main__")
+"""
 
 
 class DependencyPreparationError(ValueError):
@@ -185,3 +201,70 @@ def missing_root_requirements(
         ):
             missing.append(str(requirement))
     return sorted(missing)
+
+
+def resolve_offline(
+    wheelhouse: Path, roots: tuple[str, ...], timeout: int = 120
+) -> dict:
+    """Run the installed pip resolver against local wheels, without installing anything."""
+    if not roots:
+        raise DependencyPreparationError("ROOT_REQUIREMENTS_EMPTY")
+    roots = tuple(sorted({str(local_requirement(item)) for item in roots}))
+    wheels = inventory_wheels(wheelhouse)
+    candidates = compatible_wheels(wheels)
+    if missing_root_requirements(candidates, roots):
+        raise DependencyPreparationError("ROOT_WHEELS_MISSING")
+    environment = {
+        key: os.environ[key]
+        for key in ("PATH", "HOME", "TMPDIR", "SYSTEMROOT", "LANG")
+        if key in os.environ
+    }
+    environment["PIP_CONFIG_FILE"] = os.devnull
+    with tempfile.TemporaryDirectory(prefix="koshshield-resolve-") as scratch:
+        report_path = Path(scratch) / "report.json"
+        command = [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            OFFLINE_PIP_BOOTSTRAP,
+            "--isolated",
+            "install",
+            "--dry-run",
+            "--ignore-installed",
+            "--no-index",
+            "--only-binary=:all:",
+            "--disable-pip-version-check",
+            "--no-cache-dir",
+            "--no-input",
+            "--find-links",
+            str(wheelhouse.resolve()),
+            "--report",
+            str(report_path),
+            "--",
+            *roots,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise DependencyPreparationError("OFFLINE_RESOLUTION_TIMEOUT") from exc
+        if result.returncode != 0 or not report_path.is_file():
+            raise DependencyPreparationError("OFFLINE_RESOLUTION_FAILED")
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as exc:
+            raise DependencyPreparationError("RESOLVER_REPORT_INVALID") from exc
+    if (
+        not isinstance(report, dict)
+        or report.get("version") != "1"
+        or not isinstance(report.get("install"), list)
+    ):
+        raise DependencyPreparationError("RESOLVER_REPORT_INVALID")
+    return report

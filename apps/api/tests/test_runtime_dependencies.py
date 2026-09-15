@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import sys
 from pathlib import Path
 from zipfile import ZipFile
@@ -20,6 +21,7 @@ from scripts.runtime_dependencies import (  # noqa: E402
     inventory_wheels,
     local_requirement,
     missing_root_requirements,
+    resolve_offline,
     runtime_requirements,
 )
 
@@ -120,3 +122,58 @@ def test_project_constraints_are_preserved_and_models_added(tmp_path: Path) -> N
     assert "fastapi<1,>=0.115" in requirements
     assert "uvicorn[standard]>=0.34" in requirements
     assert set(("FlagEmbedding", "torch", "paddleocr", "transformers")) <= set(requirements)
+
+
+def test_real_pip_resolves_synthetic_local_wheels_without_installing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from importlib.metadata import distributions
+
+    make_wheel(tmp_path, name="fixture_parent", requirements=("fixture-child>=1",))
+    make_wheel(tmp_path, name="fixture_child")
+    before = sorted((dist.metadata["Name"], dist.version) for dist in distributions())
+    real_run = subprocess.run
+    calls = []
+
+    def capture_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", capture_run)
+    report = resolve_offline(tmp_path, ("fixture-parent",))
+    assert {item["metadata"]["name"] for item in report["install"]} == {
+        "fixture_parent",
+        "fixture_child",
+    }
+    assert sorted((dist.metadata["Name"], dist.version) for dist in distributions()) == before
+    command, options = calls[0]
+    assert {
+        "--dry-run",
+        "--ignore-installed",
+        "--no-index",
+        "--only-binary=:all:",
+        "--no-cache-dir",
+    } <= set(command)
+    assert options["env"]["PIP_CONFIG_FILE"] == "/dev/null"
+    assert "PIP_INDEX_URL" not in options["env"]
+
+
+def test_real_pip_reports_transitive_constraint_conflict(tmp_path: Path) -> None:
+    make_wheel(tmp_path, name="fixture_parent", requirements=("fixture-child<2",))
+    make_wheel(tmp_path, name="fixture_child", version="2.0")
+    with pytest.raises(DependencyPreparationError, match="OFFLINE_RESOLUTION_FAILED"):
+        resolve_offline(tmp_path, ("fixture-parent", "fixture-child>=2"))
+
+
+def test_missing_root_wheels_do_not_launch_pip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_wheel(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("pip must not run when root wheels are missing")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    with pytest.raises(DependencyPreparationError, match="ROOT_WHEELS_MISSING"):
+        resolve_offline(tmp_path, ("missing",))
