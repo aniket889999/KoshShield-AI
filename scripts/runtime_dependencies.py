@@ -412,3 +412,41 @@ def verify_dependency_evidence(repo_root: Path, lock_file: Path) -> None:
         raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise DependencyPreparationError("DEPENDENCY_EVIDENCE_INVALID") from exc
+
+
+def write_resolution_bundle(
+    repo_root: Path, wheelhouse: Path, roots: tuple[str, ...], report: dict
+) -> None:
+    """Publish new metadata files without overwriting operator files; partial writes stay unready."""
+    root = repo_root.resolve()
+    try:
+        relative_wheelhouse = wheelhouse.resolve().relative_to(root)
+    except ValueError as exc:
+        raise DependencyPreparationError("WHEELHOUSE_PATH_UNSAFE") from exc
+    lock, evidence = build_resolution_evidence(wheelhouse, roots, report)
+    evidence["wheelhouse"] = str(relative_wheelhouse)
+    outputs = {
+        root / "requirements-lock.txt": lock,
+        root / EVIDENCE_PATH: json.dumps(evidence, indent=2, sort_keys=True) + "\n",
+    }
+    for path, content in outputs.items():
+        if path.is_symlink() or not path.resolve().is_relative_to(root):
+            raise DependencyPreparationError("OUTPUT_PATH_UNSAFE")
+        if path.exists() and (
+            not path.is_file() or path.read_text(encoding="utf-8") != content
+        ):
+            raise DependencyPreparationError("OUTPUT_ALREADY_EXISTS")
+    for path, content in outputs.items():
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent
+        ) as scratch:
+            scratch.write(content)
+            scratch.flush()
+            os.fsync(scratch.fileno())
+            try:
+                os.link(scratch.name, path)
+            except FileExistsError as exc:
+                raise DependencyPreparationError("OUTPUT_ALREADY_EXISTS") from exc

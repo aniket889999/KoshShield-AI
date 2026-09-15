@@ -27,6 +27,7 @@ from scripts.runtime_dependencies import (  # noqa: E402
     resolve_offline,
     runtime_requirements,
     verify_dependency_evidence,
+    write_resolution_bundle,
 )
 
 
@@ -264,3 +265,61 @@ def test_readiness_rejects_stale_dependency_evidence(resolved_fixture, monkeypat
         evidence_path.write_text(json.dumps(evidence))
     with pytest.raises(DependencyPreparationError):
         verify_dependency_evidence(root, lock_path)
+
+
+def test_bundle_publication_is_idempotent_and_preserves_existing_files(resolved_fixture) -> None:
+    root, roots, report = resolved_fixture
+    write_resolution_bundle(root, root, roots, report)
+    lock = root / "requirements-lock.txt"
+    original_time = lock.stat().st_mtime_ns
+    write_resolution_bundle(root, root, roots, report)
+    assert lock.stat().st_mtime_ns == original_time
+    lock.write_text("operator-maintained file\n")
+    with pytest.raises(DependencyPreparationError, match="OUTPUT_ALREADY_EXISTS"):
+        write_resolution_bundle(root, root, roots, report)
+    assert lock.read_text() == "operator-maintained file\n"
+
+
+def test_cli_inspection_never_runs_pip_or_writes_outputs(tmp_path, monkeypatch, capsys) -> None:
+    from scripts.prepare_runtime_dependencies import main
+
+    make_wheel(tmp_path / "wheels")
+    monkeypatch.setattr("scripts.runtime_dependencies.runtime_requirements", lambda _: ("demo",))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Inspection must not launch subprocesses")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    assert main(["--repo-root", str(tmp_path), "--wheelhouse", "wheels"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "INVENTORIED"
+    assert report["resolver_executed"] is False
+    assert not (tmp_path / "requirements-lock.txt").exists()
+    assert not (tmp_path / "data").exists()
+
+
+def test_cli_explicit_preparation_creates_verified_synthetic_bundle(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from scripts.prepare_runtime_dependencies import main
+
+    make_wheel(tmp_path / "wheels")
+    monkeypatch.setattr("scripts.runtime_dependencies.runtime_requirements", lambda _: ("demo",))
+    assert main(["--repo-root", str(tmp_path), "--wheelhouse", "wheels", "--prepare"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "RESOLVED_NOT_INSTALLED"
+    assert report["resolver_executed"] is True
+    assert report["packages_installed"] is False
+    verify_dependency_evidence(tmp_path, tmp_path / "requirements-lock.txt")
+
+
+def test_cli_missing_wheelhouse_is_structured_failure(tmp_path, capsys) -> None:
+    from scripts.prepare_runtime_dependencies import main
+
+    project = tmp_path / "apps/api/pyproject.toml"
+    project.parent.mkdir(parents=True)
+    project.write_text("[project]\ndependencies = []\n")
+    assert main(["--repo-root", str(tmp_path)]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["failure_code"] == "WHEELHOUSE_MISSING"
+    assert not (tmp_path / "data").exists()
