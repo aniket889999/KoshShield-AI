@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,7 @@ from scripts.runtime_dependencies import (  # noqa: E402
     missing_root_requirements,
     resolve_offline,
     runtime_requirements,
+    verify_dependency_evidence,
 )
 
 
@@ -215,3 +217,50 @@ def test_resolution_evidence_rejects_inconsistent_reports(resolved_fixture, tamp
         ]
     with pytest.raises(DependencyPreparationError):
         build_resolution_evidence(wheelhouse, roots, report)
+
+
+def record_fixture_evidence(resolved_fixture, monkeypatch: pytest.MonkeyPatch):
+    root, roots, report = resolved_fixture
+    lock, evidence = build_resolution_evidence(root, roots, report)
+    evidence["wheelhouse"] = "."
+    destination = root / "data/runtime/dependency-resolution.json"
+    destination.parent.mkdir(parents=True)
+    destination.write_text(json.dumps(evidence), encoding="utf-8")
+    lock_path = root / "requirements-lock.txt"
+    lock_path.write_text(lock, encoding="utf-8")
+    monkeypatch.setattr("scripts.runtime_dependencies.runtime_requirements", lambda _: roots)
+    return root, lock_path, destination
+
+
+def test_readiness_consumes_evidence_without_subprocesses(resolved_fixture, monkeypatch) -> None:
+    from scripts import provision_local_runtime as provision
+
+    root, lock_path, _ = record_fixture_evidence(resolved_fixture, monkeypatch)
+    monkeypatch.setattr(provision, "REQUIRED_RUNTIME_PACKAGES", {"fixture-parent", "fixture-child"})
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Readiness must not execute a resolver")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    verify_dependency_evidence(root, lock_path)
+    assert provision.check_dependency_lock(root) == (True, [])
+
+
+@pytest.mark.parametrize("tamper", ["lock", "wheel", "roots", "escape"])
+def test_readiness_rejects_stale_dependency_evidence(resolved_fixture, monkeypatch, tamper) -> None:
+    root, lock_path, evidence_path = record_fixture_evidence(resolved_fixture, monkeypatch)
+    if tamper == "lock":
+        lock_path.write_text(lock_path.read_text() + "# modified\n")
+    elif tamper == "wheel":
+        wheel = next(root.glob("*.whl"))
+        wheel.write_bytes(wheel.read_bytes() + b"changed")
+    elif tamper == "roots":
+        monkeypatch.setattr(
+            "scripts.runtime_dependencies.runtime_requirements", lambda _: ("another",)
+        )
+    else:
+        evidence = json.loads(evidence_path.read_text())
+        evidence["wheelhouse"] = "../outside"
+        evidence_path.write_text(json.dumps(evidence))
+    with pytest.raises(DependencyPreparationError):
+        verify_dependency_evidence(root, lock_path)

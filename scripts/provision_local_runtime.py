@@ -654,17 +654,28 @@ def check_dependency_lock(repo_root: Path) -> tuple[bool, list[Blocker]]:
             )
         ]
 
-    # Without genuine dependency resolution evidence from an authoritative package resolver,
-    # keep DEPENDENCY_LOCK_INCOMPLETE. A comment or unverified pin list does not establish resolver provenance.
-    return False, [
-        Blocker(
-            code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
-            message=(
-                "Dependency lock syntax is valid, but genuine dependency resolution has not been verified "
-                "for the target environment (darwin-arm64 cp312). Annotations or fabricated pins do not establish resolver provenance."
-            ),
+    if __package__:
+        from .runtime_dependencies import (
+            DependencyPreparationError,
+            verify_dependency_evidence,
         )
-    ]
+    else:
+        from runtime_dependencies import (
+            DependencyPreparationError,
+            verify_dependency_evidence,
+        )
+
+    try:
+        verify_dependency_evidence(repo_root, lock_file)
+    except DependencyPreparationError as error:
+        return False, [
+            Blocker(
+                code=BlockerCode.DEPENDENCY_LOCK_INCOMPLETE,
+                message="Recorded offline dependency resolution is missing, invalid or stale.",
+                details={"failure_code": error.code},
+            )
+        ]
+    return True, []
 
 
 def validate_manifest(

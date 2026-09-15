@@ -25,6 +25,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
 MAX_METADATA_BYTES = 1024 * 1024
+EVIDENCE_PATH = Path("data/runtime/dependency-resolution.json")
 MODEL_REQUIREMENTS = (
     "FlagEmbedding",
     "transformers",
@@ -375,3 +376,39 @@ def build_resolution_evidence(
         "pip_report": report,
     }
     return lock, evidence
+
+
+def verify_dependency_evidence(repo_root: Path, lock_file: Path) -> None:
+    """Read-only consistency check of recorded local resolution, not publisher authentication."""
+    try:
+        evidence_path = repo_root / EVIDENCE_PATH
+        if (
+            evidence_path.stat().st_size > 8 * MAX_METADATA_BYTES
+            or lock_file.stat().st_size > MAX_METADATA_BYTES
+        ):
+            raise DependencyPreparationError("DEPENDENCY_EVIDENCE_TOO_LARGE")
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        if (
+            type(evidence["schema_version"]) is not int
+            or evidence["schema_version"] != 1
+            or evidence["source"] != "pip-dry-run-no-index"
+        ):
+            raise DependencyPreparationError("DEPENDENCY_EVIDENCE_INVALID")
+        relative = Path(evidence["wheelhouse"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise DependencyPreparationError("WHEELHOUSE_PATH_UNSAFE")
+        wheelhouse = (repo_root / relative).resolve()
+        if not wheelhouse.is_relative_to(repo_root.resolve()):
+            raise DependencyPreparationError("WHEELHOUSE_PATH_UNSAFE")
+        roots = runtime_requirements(repo_root)
+        lock, rebuilt = build_resolution_evidence(
+            wheelhouse, roots, evidence["pip_report"]
+        )
+        if any(evidence.get(key) != value for key, value in rebuilt.items()):
+            raise DependencyPreparationError("DEPENDENCY_EVIDENCE_STALE")
+        if lock_file.read_text(encoding="utf-8") != lock:
+            raise DependencyPreparationError("DEPENDENCY_LOCK_MISMATCH")
+    except DependencyPreparationError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise DependencyPreparationError("DEPENDENCY_EVIDENCE_INVALID") from exc
