@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import subprocess
 import sys
@@ -16,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.runtime_dependencies import (  # noqa: E402
     DependencyPreparationError,
+    build_resolution_evidence,
     compatible_wheels,
     inspect_wheel,
     inventory_wheels,
@@ -177,3 +179,39 @@ def test_missing_root_wheels_do_not_launch_pip(
     monkeypatch.setattr(subprocess, "run", forbidden)
     with pytest.raises(DependencyPreparationError, match="ROOT_WHEELS_MISSING"):
         resolve_offline(tmp_path, ("missing",))
+
+
+@pytest.fixture
+def resolved_fixture(tmp_path: Path):
+    make_wheel(tmp_path, name="fixture_parent", requirements=("fixture-child>=1",))
+    make_wheel(tmp_path, name="fixture_child")
+    roots = ("fixture-parent",)
+    return tmp_path, roots, resolve_offline(tmp_path, roots)
+
+
+def test_resolution_evidence_binds_wheels_roots_and_lock(resolved_fixture) -> None:
+    wheelhouse, roots, report = resolved_fixture
+    lock, evidence = build_resolution_evidence(wheelhouse, roots, report)
+    assert evidence["lock_sha256"] == hashlib.sha256(lock.encode()).hexdigest()
+    assert evidence["source"] == "pip-dry-run-no-index"
+    assert len(evidence["wheels"]) == 2
+    assert "fixture-parent==1.0 --hash=sha256:" in lock
+    assert lock == build_resolution_evidence(wheelhouse, roots, report)[0]
+
+
+@pytest.mark.parametrize("tamper", ["remote", "hash", "environment", "missing_child"])
+def test_resolution_evidence_rejects_inconsistent_reports(resolved_fixture, tamper: str) -> None:
+    wheelhouse, roots, original = resolved_fixture
+    report = copy.deepcopy(original)
+    if tamper == "remote":
+        report["install"][0]["download_info"]["url"] = "https://example.invalid/package.whl"
+    elif tamper == "hash":
+        report["install"][0]["download_info"]["archive_info"]["hashes"]["sha256"] = "0" * 64
+    elif tamper == "environment":
+        report["environment"]["python_version"] = "0.0"
+    else:
+        report["install"] = [
+            item for item in report["install"] if item["metadata"]["name"] == "fixture_parent"
+        ]
+    with pytest.raises(DependencyPreparationError):
+        build_resolution_evidence(wheelhouse, roots, report)

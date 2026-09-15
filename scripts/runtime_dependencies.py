@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 from zipfile import BadZipFile, ZipFile
 
 import tomllib
@@ -268,3 +269,109 @@ def resolve_offline(
     ):
         raise DependencyPreparationError("RESOLVER_REPORT_INVALID")
     return report
+
+
+def validate_selected_dependencies(
+    selected: list[WheelInfo], roots: tuple[str, ...]
+) -> None:
+    """Check a fixed pip selection against wheel metadata; this does not select versions."""
+    environment = default_environment()
+    by_name = {wheel.name: wheel for wheel in selected}
+    pending = [local_requirement(item) for item in roots]
+    pending = [
+        req
+        for req in pending
+        if not req.marker or req.marker.evaluate({**environment, "extra": ""})
+    ]
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    visited = set()
+    while pending:
+        requirement = pending.pop()
+        name = canonicalize_name(requirement.name)
+        key = (name, str(requirement.specifier), tuple(sorted(requirement.extras)))
+        if key in seen:
+            continue
+        seen.add(key)
+        wheel = by_name.get(name)
+        if wheel is None or not requirement.specifier.contains(
+            wheel.version, prereleases=True
+        ):
+            raise DependencyPreparationError("DEPENDENCY_SELECTION_INCOMPLETE")
+        visited.add(name)
+        for text in wheel.requirements:
+            child = local_requirement(text)
+            if not child.marker or any(
+                child.marker.evaluate({**environment, "extra": extra})
+                for extra in requirement.extras or {""}
+            ):
+                pending.append(child)
+    if visited != set(by_name):
+        raise DependencyPreparationError("DEPENDENCY_SELECTION_UNEXPECTED")
+
+
+def build_resolution_evidence(
+    wheelhouse: Path, roots: tuple[str, ...], report: dict
+) -> tuple[str, dict]:
+    """Bind an actual pip report to current wheel bytes, roots and interpreter environment."""
+    normalized_roots = tuple(sorted({str(local_requirement(item)) for item in roots}))
+    if not normalized_roots:
+        raise DependencyPreparationError("ROOT_REQUIREMENTS_EMPTY")
+    inventory = {
+        wheel.filename: wheel
+        for wheel in compatible_wheels(inventory_wheels(wheelhouse))
+    }
+    selected = []
+    seen = set()
+    try:
+        if report["version"] != "1" or not isinstance(report["pip_version"], str):
+            raise DependencyPreparationError("RESOLVER_REPORT_INVALID")
+        if report["environment"] != default_environment():
+            raise DependencyPreparationError("RESOLVER_ENVIRONMENT_MISMATCH")
+        for item in report["install"]:
+            download = item["download_info"]
+            url = urlsplit(download["url"])
+            if url.scheme != "file" or url.netloc or url.query or url.fragment:
+                raise DependencyPreparationError("RESOLVER_SOURCE_UNSAFE")
+            source = Path(unquote(url.path))
+            wheel = inventory.get(source.name)
+            if (
+                wheel is None
+                or source.resolve() != (wheelhouse / wheel.filename).resolve()
+            ):
+                raise DependencyPreparationError("RESOLVER_SOURCE_UNSAFE")
+            if (
+                download["archive_info"]["hashes"]["sha256"].lower() != wheel.sha256
+                or canonicalize_name(item["metadata"]["name"]) != wheel.name
+                or Version(item["metadata"]["version"]) != Version(wheel.version)
+                or wheel.name in seen
+            ):
+                raise DependencyPreparationError("RESOLVER_WHEEL_MISMATCH")
+            selected.append(wheel)
+            seen.add(wheel.name)
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise DependencyPreparationError("RESOLVER_REPORT_INVALID") from exc
+    validate_selected_dependencies(selected, normalized_roots)
+    selected.sort(key=lambda wheel: wheel.name)
+    lock = "".join(
+        f"{wheel.name}=={wheel.version} --hash=sha256:{wheel.sha256}\n"
+        for wheel in selected
+    )
+    evidence = {
+        "schema_version": 1,
+        "source": "pip-dry-run-no-index",
+        "roots": list(normalized_roots),
+        "environment": default_environment(),
+        "lock_sha256": hashlib.sha256(lock.encode()).hexdigest(),
+        "wheels": [
+            {
+                "filename": wheel.filename,
+                "name": wheel.name,
+                "version": wheel.version,
+                "size_bytes": wheel.size_bytes,
+                "sha256": wheel.sha256,
+            }
+            for wheel in selected
+        ],
+        "pip_report": report,
+    }
+    return lock, evidence
