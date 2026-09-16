@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import errno
+import importlib.metadata
+import importlib.util
 import json
 import os
 import stat
@@ -109,3 +111,27 @@ def inspect_bge_bundle(model_dir: Path) -> dict[str, int | str | bool]:
         "integrity_verified": False,
         "model_loaded": False,
     }
+
+
+def inspect_ocr_bundle(model_dir: Path) -> str:
+    """Check matching PaddleOCR 2.x inference program/parameter files."""
+    for prefix in ("model", "inference"):
+        program = model_dir / f"{prefix}.pdmodel"
+        parameters = model_dir / f"{prefix}.pdiparams"
+        if program.exists() and parameters.exists():
+            with open_artifact(program), open_artifact(parameters):
+                return prefix
+    raise ArtifactCheckError("OCR_INFERENCE_FILES_MISSING")
+
+
+def inspect_ocr_runtime() -> str:
+    """Inspect installed metadata without importing or initializing PaddleOCR."""
+    if any(importlib.util.find_spec(name) is None for name in ("paddleocr", "paddle")):
+        raise ArtifactCheckError("OCR_DEPENDENCY_MISSING")
+    try:
+        version = importlib.metadata.version("paddleocr")
+    except importlib.metadata.PackageNotFoundError:
+        raise ArtifactCheckError("OCR_DEPENDENCY_MISSING") from None
+    if version.split(".", 1)[0] != "2":
+        raise ArtifactCheckError("OCR_API_VERSION_UNSUPPORTED")
+    return version

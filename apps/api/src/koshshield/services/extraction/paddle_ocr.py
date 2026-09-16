@@ -1,9 +1,13 @@
-import importlib.util
 import io
 import logging
 from pathlib import Path
 from typing import Any
 
+from koshshield.runtime_artifacts import (
+    ArtifactCheckError,
+    inspect_ocr_bundle,
+    inspect_ocr_runtime,
+)
 from koshshield.services.extraction.interfaces import (
     ExtractedBlock,
     ExtractedPage,
@@ -33,11 +37,6 @@ class PaddleOcrAdapter:
 
     def is_available(self) -> tuple[bool, str]:
         """Verifies if PaddleOCR package and local model paths are installed and ready."""
-        # 1. Check if paddleocr is installed
-        if importlib.util.find_spec("paddleocr") is None:
-            return False, "paddleocr package is not installed"
-
-        # 2. In an air-gapped system, local model directories must be explicitly configured
         if not self.det_model_dir or not self.rec_model_dir:
             return (
                 False,
@@ -45,12 +44,17 @@ class PaddleOcrAdapter:
                 "(KOSHSHIELD_OCR_DET_MODEL_DIR, KOSHSHIELD_OCR_REC_MODEL_DIR)",
             )
 
-        if not Path(self.det_model_dir).exists():
-            return False, f"OCR detection model dir does not exist: {self.det_model_dir}"
-        if not Path(self.rec_model_dir).exists():
-            return False, f"OCR recognition model dir does not exist: {self.rec_model_dir}"
+        try:
+            inspect_ocr_runtime()
+            paths = [self.det_model_dir, self.rec_model_dir]
+            if self.cls_model_dir:
+                paths.append(self.cls_model_dir)
+            for path in paths:
+                inspect_ocr_bundle(Path(path))
+        except ArtifactCheckError as exc:
+            return False, f"Local OCR prerequisites failed ({exc.code})"
 
-        return True, "ready"
+        return True, "OCR bundle structure present; recognition has not been verified"
 
     def _get_engine(self) -> Any:
         if self._engine is not None:

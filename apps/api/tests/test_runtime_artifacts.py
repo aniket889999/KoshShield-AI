@@ -11,9 +11,12 @@ from koshshield.runtime_artifacts import (
     embedding_dimension,
     inspect_bge_bundle,
     inspect_gguf,
+    inspect_ocr_bundle,
+    inspect_ocr_runtime,
     read_artifact_json,
 )
 from koshshield.runtime_preflight import PrerequisiteStatus, check_qwen_gguf
+from koshshield.services.extraction.paddle_ocr import PaddleOcrAdapter
 from koshshield.services.retrieval.embeddings.bge_m3 import BgeM3EmbeddingProvider
 from koshshield.services.retrieval.embeddings.interfaces import ModelUnavailableError
 
@@ -144,3 +147,58 @@ def test_bge_onnx_only_is_not_a_flagembedding_bundle(tmp_path: Path) -> None:
     (tmp_path / "pytorch_model.bin").rename(tmp_path / "model.onnx")
     with pytest.raises(ArtifactCheckError, match="ARTIFACT_MISSING"):
         inspect_bge_bundle(tmp_path)
+
+
+@pytest.mark.parametrize("prefix", ["model", "inference"])
+def test_ocr_requires_matching_nonempty_inference_pair(tmp_path: Path, prefix: str) -> None:
+    with pytest.raises(ArtifactCheckError, match="OCR_INFERENCE_FILES_MISSING"):
+        inspect_ocr_bundle(tmp_path)
+    (tmp_path / f"{prefix}.pdmodel").write_bytes(b"synthetic program")
+    with pytest.raises(ArtifactCheckError, match="OCR_INFERENCE_FILES_MISSING"):
+        inspect_ocr_bundle(tmp_path)
+    (tmp_path / f"{prefix}.pdiparams").write_bytes(b"")
+    with pytest.raises(ArtifactCheckError, match="ARTIFACT_EMPTY"):
+        inspect_ocr_bundle(tmp_path)
+    (tmp_path / f"{prefix}.pdiparams").write_bytes(b"synthetic parameters")
+    assert inspect_ocr_bundle(tmp_path) == prefix
+
+
+def test_ocr_does_not_mix_program_and_parameter_prefixes(tmp_path: Path) -> None:
+    (tmp_path / "model.pdmodel").write_bytes(b"program")
+    (tmp_path / "inference.pdiparams").write_bytes(b"parameters")
+    with pytest.raises(ArtifactCheckError, match="OCR_INFERENCE_FILES_MISSING"):
+        inspect_ocr_bundle(tmp_path)
+
+
+@pytest.mark.parametrize("version", ["3.0.0", "3.3.1", "1.0.0", "unknown"])
+def test_ocr_rejects_unsupported_api_without_importing(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    monkeypatch.setattr("importlib.util.find_spec", lambda _: object())
+    monkeypatch.setattr("importlib.metadata.version", lambda _: version)
+    with pytest.raises(ArtifactCheckError, match="OCR_API_VERSION_UNSUPPORTED"):
+        inspect_ocr_runtime()
+
+
+def test_ocr_checks_paddle_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "importlib.util.find_spec", lambda name: None if name == "paddle" else object()
+    )
+    with pytest.raises(ArtifactCheckError, match="OCR_DEPENDENCY_MISSING"):
+        inspect_ocr_runtime()
+
+
+def test_ocr_configured_classifier_must_also_be_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("importlib.util.find_spec", lambda _: object())
+    monkeypatch.setattr("importlib.metadata.version", lambda _: "2.7.0.3")
+    (tmp_path / "model.pdmodel").write_bytes(b"program")
+    (tmp_path / "model.pdiparams").write_bytes(b"parameters")
+    adapter = PaddleOcrAdapter(tmp_path, tmp_path, cls_model_dir=tmp_path / "missing")
+    assert adapter.is_available() == (
+        False,
+        "Local OCR prerequisites failed (OCR_INFERENCE_FILES_MISSING)",
+    )
+    adapter.cls_model_dir = None
+    assert adapter.is_available()[0] is True

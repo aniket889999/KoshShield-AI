@@ -26,7 +26,13 @@ from pathlib import Path
 from typing import Any
 
 from koshshield.config import Settings, get_settings
-from koshshield.runtime_artifacts import ArtifactCheckError, inspect_bge_bundle, inspect_gguf
+from koshshield.runtime_artifacts import (
+    ArtifactCheckError,
+    inspect_bge_bundle,
+    inspect_gguf,
+    inspect_ocr_bundle,
+    inspect_ocr_runtime,
+)
 
 
 class PrerequisiteStatus(StrEnum):
@@ -134,12 +140,6 @@ def check_qwen_gguf(settings: Settings) -> CheckResult:
 
 def check_ocr_models(settings: Settings) -> CheckResult:
     """Verifies local PaddleOCR resources and directory configurations."""
-    if importlib.util.find_spec("paddleocr") is None:
-        return CheckResult(
-            status=PrerequisiteStatus.ERROR,
-            details="paddleocr package is not installed",
-        )
-
     if not settings.ocr_det_model_dir or not settings.ocr_rec_model_dir:
         return CheckResult(
             status=PrerequisiteStatus.MISSING_ARTIFACT,
@@ -149,24 +149,30 @@ def check_ocr_models(settings: Settings) -> CheckResult:
             ),
         )
 
-    det_path = Path(settings.ocr_det_model_dir)
-    rec_path = Path(settings.ocr_rec_model_dir)
-
-    if not det_path.is_dir():
+    try:
+        version = inspect_ocr_runtime()
+        paths = [settings.ocr_det_model_dir, settings.ocr_rec_model_dir]
+        if settings.ocr_cls_model_dir:
+            paths.append(settings.ocr_cls_model_dir)
+        for path in paths:
+            inspect_ocr_bundle(Path(path))
+    except ArtifactCheckError as exc:
         return CheckResult(
-            status=PrerequisiteStatus.MISSING_ARTIFACT,
-            details="OCR detection model directory not found on local disk",
-        )
-
-    if not rec_path.is_dir():
-        return CheckResult(
-            status=PrerequisiteStatus.MISSING_ARTIFACT,
-            details="OCR recognition model directory not found on local disk",
+            status=PrerequisiteStatus.CONTRACT_MISMATCH,
+            details="OCR dependency or local inference bundle inspection failed",
+            metadata={"failure_code": exc.code},
         )
 
     return CheckResult(
         status=PrerequisiteStatus.READY,
-        details="OCR detection and recognition model directories verified on local disk",
+        details="OCR 2.x bundle structure present; loading and recognition unverified",
+        metadata={
+            "paddleocr_version": version,
+            "validation_scope": "bundle_structure_only",
+            "integrity_verified": False,
+            "model_loaded": False,
+            "angle_classifier_configured": bool(settings.ocr_cls_model_dir),
+        },
     )
 
 
