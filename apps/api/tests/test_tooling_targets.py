@@ -13,6 +13,8 @@ import pytest
         ("prepare-dependencies", "--prepare", "pip install"),
         ("test-api", "pytest apps/api/tests", "pnpm"),
         ("lint-api", "ruff check apps/api scripts", "pnpm"),
+        ("runtime-preflight", "python -B -m koshshield.runtime_preflight", "--probe-"),
+        ("runtime-probes", "--probe-services --probe-storage", "docker compose up"),
     ],
 )
 def test_make_target_contract(target: str, expected: str, forbidden: str) -> None:

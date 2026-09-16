@@ -1,13 +1,15 @@
 """Local runtime preflight checker for KoshShield AI.
 
-Verifies configured runtime prerequisites independently:
+Inspects configured runtime prerequisites independently:
 1. Local model artifacts: BGE-M3, Qwen GGUF, projector, OCR resources.
 2. Dependencies and llama.cpp build/alias/vision capability contract.
-3. Qdrant readiness on local allowlisted URL with collection schema checks.
-4. Isolated database and encrypted scratch vault usability.
+3. Optional local llama.cpp and read-only Qdrant schema probes (--probe-services).
+4. Optional temporary database/vault roundtrip (--probe-storage).
 
 Outputs structured JSON with prerequisite statuses and exits nonzero if any fail.
-Never prints raw keys, env dumps, unrestricted paths, or unhandled exceptions.
+Never prints raw keys, env dumps, unrestricted paths, or unhandled check exceptions.
+Use Python -B to disable interpreter bytecode writes during read-only inspection.
+No check in this module establishes artifact authenticity or real inference quality.
 """
 
 from __future__ import annotations

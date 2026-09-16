@@ -18,8 +18,8 @@ Acquire the following quantized GGUF artifacts via a verified offline physical t
 
 | Artifact | File Name | Description |
 |---|---|---|
-| **Base Model** | `Qwen3-VL-4B-Instruct-Q4_K_M.gguf` | 4-bit quantized Qwen3-VL-4B instruction-tuned text backbone |
-| **Multimodal Projector** | `mmproj-Qwen3-VL-4B-Instruct-Q8_0.gguf` | 8-bit quantized vision encoder projector for visual tokens |
+| **Base Model** | `Qwen3VL-4B-Instruct-Q4_K_M.gguf` | Q4_K_M file named in the current artifact manifest |
+| **Multimodal Projector** | `mmproj-Qwen3VL-4B-Instruct-F16.gguf` | F16 projector named in the current artifact manifest |
 
 Store these files in a dedicated local directory outside the repository (for example, `/opt/models/qwen3-vl/` or `~/.cache/koshshield/models/`).
 
@@ -33,8 +33,8 @@ Operators must verify the SHA-256 digests of downloaded model artifacts against 
 
 ```bash
 # Generate SHA-256 checksums of local artifact files
-shasum -a 256 Qwen3-VL-4B-Instruct-Q4_K_M.gguf
-shasum -a 256 mmproj-Qwen3-VL-4B-Instruct-Q8_0.gguf
+shasum -a 256 Qwen3VL-4B-Instruct-Q4_K_M.gguf
+shasum -a 256 mmproj-Qwen3VL-4B-Instruct-F16.gguf
 
 # Verify against the operator's signed release manifest
 gpg --verify SHA256SUMS.sig SHA256SUMS
@@ -54,17 +54,21 @@ For local Python wheel inspection and explicit resolver-only preparation, see
 This produces consistency evidence without installing packages; it does not
 complete the real-model integration prerequisites.
 
+For read-only artifact inspection and explicit service/storage probes, see
+[Runtime inspection](runtime_inspection.md). `make runtime-preflight` now skips
+service calls and scratch writes; `make runtime-probes` explicitly enables them.
+
 ### Guardrail Verification Rules
 1. **Default Read-Only Dry-Run**: Invoking `provision_local_runtime.py` without arguments or with `--dry-run` performs read-only checks without network calls, package installations, container pulls, or filesystem mutations.
 2. **Fail-Closed Integrity Validation**: Artifacts listed in `docs/runtime_artifacts_manifest.json` must specify exact filenames, sizes, and verified SHA-256 digests. Any artifact with unverified or missing digests (`integrity_status != "VERIFIED"`) blocks provisioning with `ARTIFACT_INTEGRITY_UNVERIFIED`.
 3. **Capacity & 10 GiB Headroom**: Capacity checks evaluate integer bytes and 1024-based GiB conversions. Nonexistent model directories are evaluated against their nearest existing parent without creating directories. The check accounts for:
-   - Net model and artifact bytes (~5.49 GiB)
+   - Net model and artifact bytes (derived from the current manifest)
    - Estimated Python dependencies (~2.50 GiB)
    - Estimated temporary extraction space (~2.00 GiB)
    - Estimated Docker storage growth (~1.50 GiB)
    - Estimated runtime caches (~1.00 GiB)
    - Mandatory reserved headroom of 10.00 GiB (10,737,418,240 bytes)
-   Total required capacity on a single filesystem is ~22.49 GiB. If available space is below this threshold, the check reports `CAPACITY_INSUFFICIENT` with exact deficit metrics.
+   Use the current report's integer-byte totals rather than an old estimate. Its manifest must still be extended with the required BGE-M3 trained heads. Insufficient space reports `CAPACITY_INSUFFICIENT` with exact deficit metrics.
 4. **Multi-Filesystem Accounting**: Specifying an external `--model-dir` isolates model storage requirements from repository and Docker requirements. The external filesystem must retain 10 GiB headroom above model weights, while the local filesystem must retain 10 GiB headroom above Python dependencies, Docker layers, and temporary extraction buffers.
 5. **Dependency Lock Verification**: Provisioning verifies that a complete, hash-pinned dependency lock exists. Untracked wheel directories or unpinned pyproject ranges fail with `DEPENDENCY_LOCK_INCOMPLETE`.
 6. **Apply Behavior**: `--apply` enforces all prerequisite checks before any side effect. If prerequisites are blocked, it exits nonzero (exit code 1). When prerequisites pass, actual automated downloading remains unimplemented in this checkpoint and exits with `APPLY_NOT_IMPLEMENTED` (exit code 2). Stage 0 remains incomplete.
@@ -79,8 +83,8 @@ KoshShield AI requires `llama-server` from **`llama.cpp` release `v0.4.0` (build
 
 ```bash
 llama-server \
-  --model /opt/models/qwen3-vl/Qwen3-VL-4B-Instruct-Q4_K_M.gguf \
-  --mmproj /opt/models/qwen3-vl/mmproj-Qwen3-VL-4B-Instruct-Q8_0.gguf \
+  --model /opt/models/qwen3-vl/Qwen3VL-4B-Instruct-Q4_K_M.gguf \
+  --mmproj /opt/models/qwen3-vl/mmproj-Qwen3VL-4B-Instruct-F16.gguf \
   --host 127.0.0.1 \
   --port 8080 \
   --alias qwen3-vl-4b-instruct \
@@ -91,17 +95,18 @@ llama-server \
 
 ### Critical Server Parameters
 - Supported target contract: **release `v0.4.0`**, **build `b10809`**, **commit `5266f24`**
-- `--host 127.0.0.1`: Bind strictly to loopback to prevent external network access.
+- `--host 127.0.0.1`: Restrict incoming connections to loopback. This does not prevent outbound connections.
 - `--alias qwen3-vl-4b-instruct`: Match the model alias configured in `KOSHSHIELD_LLAMA_CPP_MODEL_ID` exactly.
 - `--model` and `--mmproj`: Local file paths only. Never use `-hf` or remote download options.
 - Vision Modality: The server must report `modalities.vision: true` and matching `build_info` via native `GET /props?model=qwen3-vl-4b-instruct`.
-- `--temperature 0.0`: Deterministic responses for grounded evidence verification.
+- `--temperature 0.0`: Reduce sampling variability; this does not guarantee reproducible or factual responses.
 
 ---
 
 ## 4. KoshShield AI Configuration
 
-Enable multimodal answering in `apps/api/.env` or process environment:
+Set configuration in the repository-root `.env` when running commands from the root,
+or in the process environment. Enable multimodal answering only after approved setup:
 
 ```env
 # Enable experimental multimodal answering
@@ -112,6 +117,10 @@ KOSHSHIELD_LLAMA_BASE_URL=http://127.0.0.1:8080/v1
 
 # Configured model identifier checked against /v1/models (must match exactly)
 KOSHSHIELD_LLAMA_CPP_MODEL_ID=qwen3-vl-4b-instruct
+
+# Local file paths inspected before runtime probes
+KOSHSHIELD_LLAMA_CPP_MODEL_PATH=/opt/models/qwen3-vl/Qwen3VL-4B-Instruct-Q4_K_M.gguf
+KOSHSHIELD_LLAMA_CPP_MMPROJ_PATH=/opt/models/qwen3-vl/mmproj-Qwen3VL-4B-Instruct-F16.gguf
 
 # Allowlisted runtime contract
 KOSHSHIELD_LLAMA_CPP_RELEASE=v0.4.0
@@ -125,12 +134,12 @@ KOSHSHIELD_LLAMA_CPP_MAX_TOKENS=512
 
 ---
 
-## 5. Security & Privacy Guarantees
+## 5. Security & Privacy Controls
 
 1. **Anti-SSRF Protection**: `LlamaCppMultimodalClient` only permits connections to `127.0.0.1`, `localhost`, `::1`, and the explicitly configured service name (`llama-server`). Remote IP addresses, AWS/GCP metadata endpoints (`169.254.169.254`), proxy environment variables, and redirects are blocked.
 2. **Fail-Closed Runtime Preflight**: Before inference, the client queries both `GET /v1/models` and `GET /props?model={safe_model}`, strictly verifying `modalities.vision: true` and `build_info` matching the target contract (`b10809` / `5266f24`). Any build mismatch or missing vision modality aborts immediately.
 3. **Privacy-Masked Visual Evidence**: The server never passes original page images to the model. Only vault-decrypted, redacted PNG derivatives (`[REDACTED]` bounding boxes) are encoded as base64 data URLs. If unlocated PII exists on a page, visual evidence is blocked (`BLOCKED_UNLOCATED_PII`).
 4. **Strict Schema Validation**: The client validates the complete llama.cpp chat completion response against strict Pydantic schemas (`choices`, `message`, `content`, `usage`) with extra fields forbidden and bounded tokens, mapping any unexpected shapes to sanitized HTTP 502 (`MODEL_RESPONSE_INVALID`).
-5. **Strict Grounding**: The model cannot hallucinate citations. The server validates every returned `cited_chunk_ids` against authoritative DB chunk records for the active index version. Substantive answers without retrieved citations are rejected as `insufficient_evidence=true`.
+5. **Citation Validation**: The server validates returned `cited_chunk_ids` against authoritative DB chunk records for the active index version. Valid identifiers do not prove that a cited passage supports a generated claim; semantic grounding still needs evaluation.
 6. **Residual PII Protection**: Model output is scanned with `IndianPiiDetector` before returning to the caller. Any residual Aadhaar, PAN, phone number, or sensitive identifier is replaced with redacted placeholders.
-7. **No Model Data in Audit or Logs**: Audit logs and application logs record only metadata (`actor_id`, `tenant_id`, `model_id`, `query_length`, selected chunk IDs, execution duration, stable failure codes). No raw queries, answer text, prompt strings, paths, or image bytes are persisted or logged.
+7. **Audit and Diagnostic Scope**: Audit events use structured metadata. The runtime-preflight CLI suppresses library logs and sanitizes check exceptions. This does not certify all third-party inference logs; inspect those separately before confidential-data use.

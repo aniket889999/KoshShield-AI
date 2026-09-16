@@ -1,6 +1,17 @@
 # Solo development roadmap
 
-## Current runtime preparation checkpoint (2026-09-15)
+## Current runtime inspection checkpoint (2026-09-16)
+
+- Bounded GGUF header checks and BGE-M3 tokenizer/trained-head bundle validation are implemented.
+- OCR requires nonempty inference file pairs and the adapter's supported PaddleOCR 2.x API.
+- Qdrant schema inspection is read-only and uses the configured embedding dimension.
+- Default preflight makes no service calls or scratch writes; explicit flags enable probes.
+- Failure reports are independent and sanitized; layout checks never claim integrity or inference.
+- No runtime packages/models were installed or services started for this checkpoint.
+- Stage 0 remains incomplete; the artifact manifest still needs the two BGE-M3 trained heads.
+- Operator workflow: [Runtime inspection](runtime_inspection.md).
+
+## Offline dependency checkpoint (2026-09-15)
 
 - Offline wheel inventory and interpreter compatibility checks are implemented.
 - An explicit, network-blocked pip dry-run can generate exact locks and local resolution evidence.

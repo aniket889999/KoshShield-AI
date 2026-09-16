@@ -31,7 +31,7 @@ MODEL_REQUIREMENTS = (
     "transformers",
     "torch",
     "paddlepaddle",
-    "paddleocr",
+    "paddleocr>=2.7,<3",
 )
 
 OFFLINE_PIP_BOOTSTRAP = """import runpy, socket, sys

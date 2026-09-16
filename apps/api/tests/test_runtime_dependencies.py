@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.runtime_dependencies import (  # noqa: E402
+    MODEL_REQUIREMENTS,
     DependencyPreparationError,
     build_resolution_evidence,
     compatible_wheels,
@@ -126,7 +127,18 @@ def test_project_constraints_are_preserved_and_models_added(tmp_path: Path) -> N
     requirements = runtime_requirements(tmp_path)
     assert "fastapi<1,>=0.115" in requirements
     assert "uvicorn[standard]>=0.34" in requirements
-    assert set(("FlagEmbedding", "torch", "paddleocr", "transformers")) <= set(requirements)
+    assert set(("FlagEmbedding", "torch", "paddleocr<3,>=2.7", "transformers")) <= set(requirements)
+
+
+def test_offline_resolver_selects_the_supported_ocr_api(tmp_path: Path) -> None:
+    make_wheel(tmp_path, name="paddleocr", version="2.7.0")
+    make_wheel(tmp_path, name="paddleocr", version="3.0.0")
+    roots = tuple(
+        item for item in MODEL_REQUIREMENTS if local_requirement(item).name == "paddleocr"
+    )
+    assert len(roots) == 1
+    report = resolve_offline(tmp_path, roots)
+    assert [item["metadata"]["version"] for item in report["install"]] == ["2.7.0"]
 
 
 def test_real_pip_resolves_synthetic_local_wheels_without_installing(

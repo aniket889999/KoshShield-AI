@@ -1,5 +1,5 @@
 .PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key migrate runtime-preflight smoke-local provision-runtime
-.PHONY: test-api test-web lint-api lint-web dependency-inventory prepare-dependencies
+.PHONY: test-api test-web lint-api lint-web dependency-inventory prepare-dependencies runtime-probes
 
 WHEELHOUSE ?= data/wheelhouse
 
@@ -47,7 +47,10 @@ generate-key:
 	/opt/anaconda3/bin/python3.12 scripts/generate_master_key.py
 
 runtime-preflight:
-	.venv/bin/python -m koshshield.runtime_preflight
+	.venv/bin/python -B -m koshshield.runtime_preflight
+
+runtime-probes:
+	.venv/bin/python -B -m koshshield.runtime_preflight --probe-services --probe-storage
 
 smoke-local:
 	.venv/bin/python -m koshshield.smoke
