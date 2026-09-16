@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from koshshield.config import Settings, get_settings
-from koshshield.runtime_artifacts import ArtifactCheckError, inspect_gguf
+from koshshield.runtime_artifacts import ArtifactCheckError, inspect_bge_bundle, inspect_gguf
 
 
 class PrerequisiteStatus(StrEnum):
@@ -62,28 +62,17 @@ def check_bge_m3(settings: Settings) -> CheckResult:
             details="BGE-M3 model directory not configured (KOSHSHIELD_EMBEDDING_MODEL_DIR)",
         )
 
-    model_dir = Path(settings.embedding_model_dir)
-    if not model_dir.exists() or not model_dir.is_dir():
+    try:
+        metadata = inspect_bge_bundle(Path(settings.embedding_model_dir))
+    except ArtifactCheckError as exc:
         return CheckResult(
-            status=PrerequisiteStatus.MISSING_ARTIFACT,
-            details="BGE-M3 model directory does not exist on local disk",
-        )
-
-    config_file = model_dir / "config.json"
-    if not config_file.is_file():
-        return CheckResult(
-            status=PrerequisiteStatus.MISSING_ARTIFACT,
-            details="BGE-M3 config.json missing in model directory",
-        )
-
-    has_weights = any(
-        (model_dir / name).is_file()
-        for name in ["model.safetensors", "pytorch_model.bin", "model.onnx"]
-    )
-    if not has_weights:
-        return CheckResult(
-            status=PrerequisiteStatus.MISSING_ARTIFACT,
-            details="BGE-M3 model weights missing in model directory",
+            status=(
+                PrerequisiteStatus.MISSING_ARTIFACT
+                if exc.code == "ARTIFACT_MISSING"
+                else PrerequisiteStatus.CONTRACT_MISMATCH
+            ),
+            details="BGE-M3 local bundle inspection failed",
+            metadata={"failure_code": exc.code},
         )
 
     if importlib.util.find_spec("FlagEmbedding") is None:
@@ -94,7 +83,8 @@ def check_bge_m3(settings: Settings) -> CheckResult:
 
     return CheckResult(
         status=PrerequisiteStatus.READY,
-        details="BGE-M3 model weights and configuration verified on local disk",
+        details="BGE-M3 bundle structure present; model loading and integrity unverified",
+        metadata=metadata,
     )
 
 

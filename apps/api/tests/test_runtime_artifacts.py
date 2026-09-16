@@ -1,3 +1,4 @@
+import json
 import os
 import struct
 from pathlib import Path
@@ -5,8 +6,16 @@ from pathlib import Path
 import pytest
 
 from koshshield.config import Settings
-from koshshield.runtime_artifacts import ArtifactCheckError, inspect_gguf
+from koshshield.runtime_artifacts import (
+    ArtifactCheckError,
+    embedding_dimension,
+    inspect_bge_bundle,
+    inspect_gguf,
+    read_artifact_json,
+)
 from koshshield.runtime_preflight import PrerequisiteStatus, check_qwen_gguf
+from koshshield.services.retrieval.embeddings.bge_m3 import BgeM3EmbeddingProvider
+from koshshield.services.retrieval.embeddings.interfaces import ModelUnavailableError
 
 
 def gguf_header(version: int = 3, tensors: int = 1, metadata: int = 1) -> bytes:
@@ -72,3 +81,66 @@ def test_gguf_rejects_model_projector_hardlink(tmp_path: Path) -> None:
     )
     assert result.status == PrerequisiteStatus.CONTRACT_MISMATCH
     assert result.metadata["failure_code"] == "GGUF_MODEL_PROJECTOR_IDENTICAL"
+
+
+def bge_bundle(root: Path) -> None:
+    (root / "config.json").write_text('{"hidden_size": 1024}')
+    (root / "tokenizer_config.json").write_text("{}")
+    (root / "special_tokens_map.json").write_text("{}")
+    (root / "tokenizer.json").write_text('{"model": {"vocab": [["test", 1.0]]}}')
+    for name in (
+        "pytorch_model.bin",
+        "sentencepiece.bpe.model",
+        "sparse_linear.pt",
+        "colbert_linear.pt",
+    ):
+        (root / name).write_bytes(b"synthetic structure fixture; not real weights")
+
+
+def test_bge_bundle_checks_structure_without_deserializing_weights(tmp_path: Path) -> None:
+    bge_bundle(tmp_path)
+    result = inspect_bge_bundle(tmp_path)
+    assert result["dense_dimension"] == 1024
+    assert result["integrity_verified"] is False
+    assert result["model_loaded"] is False
+
+
+@pytest.mark.parametrize("name", ["sparse_linear.pt", "colbert_linear.pt", "tokenizer.json"])
+def test_bge_missing_required_component_blocks_runtime(tmp_path: Path, name: str) -> None:
+    bge_bundle(tmp_path)
+    (tmp_path / name).unlink()
+    provider = BgeM3EmbeddingProvider(tmp_path)
+    assert provider.is_available()[0] is False
+    with pytest.raises(ModelUnavailableError, match="ARTIFACT_MISSING"):
+        provider._ensure_model()
+
+
+@pytest.mark.parametrize("dimension", [True, 0, -1, 1.5, "1024", None, 65537])
+def test_bge_dimension_is_a_bounded_positive_integer(tmp_path: Path, dimension: object) -> None:
+    (tmp_path / "config.json").write_text(json.dumps({"hidden_size": dimension}))
+    with pytest.raises(ArtifactCheckError, match="EMBEDDING_DIMENSION_INVALID"):
+        embedding_dimension(tmp_path)
+    with pytest.raises(ModelUnavailableError):
+        _ = BgeM3EmbeddingProvider(tmp_path).dense_dim
+
+
+@pytest.mark.parametrize("payload", [b"[]", b"invalid", b"\xff"])
+def test_artifact_config_rejects_non_object_json(tmp_path: Path, payload: bytes) -> None:
+    path = tmp_path / "config.json"
+    path.write_bytes(payload)
+    with pytest.raises(ArtifactCheckError, match="ARTIFACT_JSON_INVALID"):
+        read_artifact_json(path)
+
+
+def test_artifact_json_read_is_bounded(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_bytes(b" " * 1025)
+    with pytest.raises(ArtifactCheckError, match="ARTIFACT_JSON_TOO_LARGE"):
+        read_artifact_json(path, max_bytes=1024)
+
+
+def test_bge_onnx_only_is_not_a_flagembedding_bundle(tmp_path: Path) -> None:
+    bge_bundle(tmp_path)
+    (tmp_path / "pytorch_model.bin").rename(tmp_path / "model.onnx")
+    with pytest.raises(ArtifactCheckError, match="ARTIFACT_MISSING"):
+        inspect_bge_bundle(tmp_path)

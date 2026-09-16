@@ -1,10 +1,15 @@
-import json
+import importlib.util
 import logging
 import os
 import threading
 from pathlib import Path
 from typing import Any
 
+from koshshield.runtime_artifacts import (
+    ArtifactCheckError,
+    embedding_dimension,
+    inspect_bge_bundle,
+)
 from koshshield.services.retrieval.embeddings.interfaces import (
     EmbeddingProvider,
     EmbeddingResult,
@@ -64,15 +69,10 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
     def _read_config_dim(self) -> None:
         if not self.model_dir or not self.model_dir.is_dir():
             return
-        config_path = self.model_dir / "config.json"
-        if config_path.is_file():
-            try:
-                data = json.loads(config_path.read_text(encoding="utf-8"))
-                dim = data.get("hidden_size") or data.get("dim") or data.get("d_model")
-                if isinstance(dim, int):
-                    self._configured_dim = dim
-            except Exception as err:
-                logger.warning("Could not parse BGE-M3 config.json: %s", err)
+        try:
+            self._configured_dim = embedding_dimension(self.model_dir)
+        except ArtifactCheckError:
+            logger.warning("BGE-M3 local dimension configuration is unavailable or invalid")
 
     @property
     def dense_dim(self) -> int:
@@ -95,24 +95,15 @@ class BgeM3EmbeddingProvider(EmbeddingProvider):
         if not self.model_dir.exists() or not self.model_dir.is_dir():
             return False, "BGE-M3 directory does not exist on local disk"
 
-        config_path = self.model_dir / "config.json"
-        if not config_path.exists():
-            return False, "BGE-M3 model config missing on local disk"
-
-        # Verify local weight files exist
-        has_weights = any(
-            (self.model_dir / name).exists()
-            for name in ["model.safetensors", "pytorch_model.bin", "model.onnx"]
-        )
-        if not has_weights:
-            return False, "BGE-M3 model weights missing on local disk"
-
         try:
-            import FlagEmbedding  # noqa: F401
-        except ImportError:
+            inspect_bge_bundle(self.model_dir)
+        except ArtifactCheckError as exc:
+            return False, f"BGE-M3 local bundle inspection failed ({exc.code})"
+
+        if importlib.util.find_spec("FlagEmbedding") is None:
             return False, "FlagEmbedding package is not installed"
 
-        return True, "BGE-M3 model weights present and ready on local disk"
+        return True, "BGE-M3 bundle structure present; inference has not been verified"
 
     def _ensure_model(self) -> Any:
         if self._model is not None:
