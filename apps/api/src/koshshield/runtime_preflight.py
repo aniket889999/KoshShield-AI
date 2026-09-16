@@ -17,12 +17,13 @@ import contextlib
 import importlib.util
 import json
 import os
-import shutil
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,7 @@ def check_bge_m3(settings: Settings) -> CheckResult:
         return CheckResult(
             status=PrerequisiteStatus.MISSING_ARTIFACT,
             details="BGE-M3 model directory not configured (KOSHSHIELD_EMBEDDING_MODEL_DIR)",
+            metadata={"failure_code": "BGE_PATH_UNCONFIGURED"},
         )
 
     try:
@@ -87,6 +89,7 @@ def check_bge_m3(settings: Settings) -> CheckResult:
         return CheckResult(
             status=PrerequisiteStatus.ERROR,
             details="FlagEmbedding package is not installed",
+            metadata={"failure_code": "EMBEDDING_DEPENDENCY_MISSING"},
         )
 
     return CheckResult(
@@ -105,6 +108,7 @@ def check_qwen_gguf(settings: Settings) -> CheckResult:
                 "Qwen GGUF model or projector path not configured "
                 "(KOSHSHIELD_LLAMA_CPP_MODEL_PATH / KOSHSHIELD_LLAMA_CPP_MMPROJ_PATH)"
             ),
+            metadata={"failure_code": "GGUF_PATHS_UNCONFIGURED"},
         )
 
     model_path = Path(settings.llama_cpp_model_path)
@@ -149,6 +153,7 @@ def check_ocr_models(settings: Settings) -> CheckResult:
                 "OCR model paths not configured "
                 "(KOSHSHIELD_OCR_DET_MODEL_DIR / KOSHSHIELD_OCR_REC_MODEL_DIR)"
             ),
+            metadata={"failure_code": "OCR_PATHS_UNCONFIGURED"},
         )
 
     try:
@@ -179,7 +184,7 @@ def check_ocr_models(settings: Settings) -> CheckResult:
 
 
 def check_dependencies() -> CheckResult:
-    """Verifies core application dependencies are importable."""
+    """Discover core module specs; this does not import or test their native libraries."""
     required_packages = [
         "fastapi",
         "pydantic",
@@ -195,11 +200,13 @@ def check_dependencies() -> CheckResult:
         return CheckResult(
             status=PrerequisiteStatus.ERROR,
             details=f"Missing required dependencies: {', '.join(missing)}",
+            metadata={"failure_code": "CORE_DEPENDENCY_MISSING"},
         )
 
     return CheckResult(
         status=PrerequisiteStatus.READY,
-        details="All core runtime dependencies verified importable",
+        details="Core module specs discovered; imports and native-library compatibility untested",
+        metadata={"validation_scope": "module_discovery_only"},
     )
 
 
@@ -237,21 +244,25 @@ def check_llama_cpp(settings: Settings) -> CheckResult:
         return CheckResult(
             status=PrerequisiteStatus.SERVICE_UNAVAILABLE,
             details="Local llama.cpp service is unreachable on configured loopback endpoint",
+            metadata={"failure_code": "LLAMA_UNAVAILABLE"},
         )
-    except LlamaCppIncapableError as err:
+    except LlamaCppIncapableError:
         return CheckResult(
             status=PrerequisiteStatus.CONTRACT_MISMATCH,
-            details=f"Local llama.cpp service contract mismatch: {err}",
+            details="Local llama.cpp service does not match the required runtime contract",
+            metadata={"failure_code": "LLAMA_CONTRACT_MISMATCH"},
         )
-    except LlamaCppSecurityError as err:
+    except LlamaCppSecurityError:
         return CheckResult(
             status=PrerequisiteStatus.ERROR,
-            details=f"llama.cpp security validation error: {err}",
+            details="llama.cpp endpoint or response security validation failed",
+            metadata={"failure_code": "LLAMA_SECURITY_REJECTED"},
         )
-    except Exception as err:
+    except Exception:
         return CheckResult(
             status=PrerequisiteStatus.ERROR,
-            details=f"llama.cpp check encountered unexpected error: {err.__class__.__name__}",
+            details="llama.cpp inspection failed",
+            metadata={"failure_code": "LLAMA_CHECK_FAILED"},
         )
 
 
@@ -319,61 +330,81 @@ def check_isolated_storage() -> CheckResult:
     from koshshield.models import DocumentRecord
     from koshshield.security.vault import EncryptedVault
 
-    scratch_dir = tempfile.mkdtemp(prefix="koshshield_preflight_")
     try:
-        scratch_path = Path(scratch_dir)
-        db_path = scratch_path / "scratch.db"
-        vault_path = scratch_path / "scratch_vault"
+        with tempfile.TemporaryDirectory(prefix="koshshield_preflight_") as scratch_dir:
+            scratch_path = Path(scratch_dir)
+            engine = create_engine(f"sqlite:///{scratch_path / 'scratch.db'}")
+            try:
+                Base.metadata.create_all(bind=engine)
+                with Session(engine) as session:
+                    if list(session.scalars(select(DocumentRecord))):
+                        raise RuntimeError("Scratch database is not empty")
 
-        # 1. Verify isolated database creation
-        engine = create_engine(f"sqlite:///{db_path}")
-        Base.metadata.create_all(bind=engine)
-        with Session(engine) as session:
-            records = list(session.scalars(select(DocumentRecord)))
-            assert len(records) == 0
-
-        # 2. Verify encrypted scratch vault roundtrip
-        ephemeral_key = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
-        vault = EncryptedVault(vault_path, ephemeral_key)
-        test_content = b"preflight-encryption-probe"
-        test_hash = "probe-hash-1234"
-        doc_id = "preflight-test-doc"
-
-        enc_path = vault.encrypt(doc_id, test_hash, test_content)
-        decrypted = vault.decrypt(doc_id, test_hash, enc_path)
-        if decrypted != test_content:
-            return CheckResult(
-                status=PrerequisiteStatus.ERROR,
-                details="Scratch vault encrypt/decrypt roundtrip mismatch",
-            )
+                ephemeral_key = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
+                vault = EncryptedVault(scratch_path / "scratch_vault", ephemeral_key)
+                test_content = b"preflight-encryption-probe"
+                test_hash = "probe-hash-1234"
+                doc_id = "preflight-test-doc"
+                enc_path = vault.encrypt(doc_id, test_hash, test_content)
+                if vault.decrypt(doc_id, test_hash, enc_path) != test_content:
+                    raise RuntimeError("Scratch vault roundtrip mismatch")
+            finally:
+                engine.dispose()
 
         return CheckResult(
             status=PrerequisiteStatus.READY,
-            details="Isolated database and encrypted scratch vault verified successfully",
+            details=(
+                "Temporary SQLite and encrypted vault roundtrip passed; deployment storage untested"
+            ),
+            metadata={"validation_scope": "temporary_storage_only"},
         )
-    except Exception as err:
+    except Exception:
         return CheckResult(
             status=PrerequisiteStatus.ERROR,
-            details=f"Isolated storage verification failed: {err.__class__.__name__}",
+            details="Isolated storage verification failed",
+            metadata={"failure_code": "SCRATCH_STORAGE_FAILED"},
         )
-    finally:
-        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def _run_check(check: Callable[[], CheckResult]) -> CheckResult:
+    try:
+        return check()
+    except Exception:
+        return CheckResult(
+            status=PrerequisiteStatus.ERROR,
+            details="Prerequisite inspection failed; other checks continue independently",
+            metadata={"failure_code": "CHECK_FAILED"},
+        )
 
 
 def run_runtime_preflight(settings: Settings | None = None) -> PreflightReport:
     """Executes all preflight checks independently and compiles structured report."""
-    cfg = settings or get_settings()
+    try:
+        cfg = settings or get_settings()
+    except Exception:
+        return _report(
+            {
+                "configuration": CheckResult(
+                    status=PrerequisiteStatus.ERROR,
+                    details="Runtime configuration is invalid or could not be read",
+                    metadata={"failure_code": "CONFIGURATION_INVALID"},
+                )
+            }
+        )
 
-    checks: dict[str, CheckResult] = {
-        "bge_m3": check_bge_m3(cfg),
-        "qwen_gguf": check_qwen_gguf(cfg),
-        "ocr_models": check_ocr_models(cfg),
-        "dependencies": check_dependencies(),
-        "llama_cpp": check_llama_cpp(cfg),
-        "qdrant": check_qdrant(cfg),
-        "isolated_storage": check_isolated_storage(),
+    checks: dict[str, Callable[[], CheckResult]] = {
+        "bge_m3": partial(check_bge_m3, cfg),
+        "qwen_gguf": partial(check_qwen_gguf, cfg),
+        "ocr_models": partial(check_ocr_models, cfg),
+        "dependencies": check_dependencies,
+        "llama_cpp": partial(check_llama_cpp, cfg),
+        "qdrant": partial(check_qdrant, cfg),
+        "isolated_storage": check_isolated_storage,
     }
+    return _report({name: _run_check(check) for name, check in checks.items()})
 
+
+def _report(checks: dict[str, CheckResult]) -> PreflightReport:
     missing_categories: list[str] = [
         name for name, res in checks.items() if res.status != PrerequisiteStatus.READY
     ]
@@ -403,9 +434,13 @@ def main() -> int:
     import logging
 
     # Suppress verbose loggers so stdout receives only structured JSON
-    logging.disable(logging.CRITICAL)
-    report = run_runtime_preflight()
-    print(json.dumps(asdict(report), indent=2))
+    previous_disable = logging.root.manager.disable
+    try:
+        logging.disable(logging.CRITICAL)
+        report = run_runtime_preflight()
+        print(json.dumps(asdict(report), indent=2))
+    finally:
+        logging.disable(previous_disable)
     return 0 if report.status == "READY" else 1
 
 
