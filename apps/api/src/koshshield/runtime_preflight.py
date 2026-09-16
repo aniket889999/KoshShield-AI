@@ -13,6 +13,7 @@ Never prints raw keys, env dumps, unrestricted paths, or unhandled exceptions.
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib.util
 import json
 import os
@@ -28,6 +29,7 @@ from typing import Any
 from koshshield.config import Settings, get_settings
 from koshshield.runtime_artifacts import (
     ArtifactCheckError,
+    embedding_dimension,
     inspect_bge_bundle,
     inspect_gguf,
     inspect_ocr_bundle,
@@ -255,42 +257,57 @@ def check_llama_cpp(settings: Settings) -> CheckResult:
 
 def check_qdrant(settings: Settings) -> CheckResult:
     """Verifies Qdrant vector store reachability and collection schema preservation."""
-    from koshshield.services.retrieval.vector_store.interfaces import VectorStoreError
+    from koshshield.services.retrieval.vector_store.interfaces import (
+        VectorStoreError,
+        VectorStoreUnavailableError,
+    )
     from koshshield.services.retrieval.vector_store.qdrant import QdrantVectorStore
 
+    store = None
     try:
+        if not settings.embedding_model_dir:
+            raise ArtifactCheckError("EMBEDDING_DIMENSION_UNAVAILABLE")
+        dimension = embedding_dimension(Path(settings.embedding_model_dir))
         store = QdrantVectorStore(
             qdrant_url=settings.qdrant_url,
             collection_name=settings.qdrant_collection,
             timeout_seconds=3.0,
         )
-        available, _ = store.is_available()
-        if not available:
-            return CheckResult(
-                status=PrerequisiteStatus.SERVICE_UNAVAILABLE,
-                details="Local Qdrant service is unreachable on configured endpoint",
-            )
-
-        # If collection exists, verify schema conformance without destructive changes
-        try:
-            exists = store._client.collection_exists(settings.qdrant_collection)
-            if exists:
-                store.ensure_collection(dense_dim=1024)
-        except VectorStoreError as err:
-            return CheckResult(
-                status=PrerequisiteStatus.CONTRACT_MISMATCH,
-                details=f"Existing Qdrant collection schema mismatch: {err}",
-            )
+        store.validate_collection(dense_dim=dimension)
 
         return CheckResult(
             status=PrerequisiteStatus.READY,
-            details="Local Qdrant service verified online with valid schema compatibility",
+            details="Existing Qdrant schema matches configured embedding dimension and indexes",
+            metadata={"dense_dimension": dimension, "schema_modified": False},
         )
-    except Exception as err:
+    except ArtifactCheckError:
+        return CheckResult(
+            status=PrerequisiteStatus.CONTRACT_MISMATCH,
+            details="Qdrant schema inspection requires valid local embedding configuration",
+            metadata={"failure_code": "EMBEDDING_DIMENSION_UNAVAILABLE"},
+        )
+    except VectorStoreUnavailableError:
         return CheckResult(
             status=PrerequisiteStatus.SERVICE_UNAVAILABLE,
-            details=f"Local Qdrant check failed: {err.__class__.__name__}",
+            details="Local Qdrant service is unavailable",
+            metadata={"failure_code": "QDRANT_UNAVAILABLE"},
         )
+    except VectorStoreError:
+        return CheckResult(
+            status=PrerequisiteStatus.CONTRACT_MISMATCH,
+            details="Qdrant collection or required schema is missing or incompatible",
+            metadata={"failure_code": "QDRANT_SCHEMA_MISMATCH"},
+        )
+    except Exception:
+        return CheckResult(
+            status=PrerequisiteStatus.ERROR,
+            details="Local Qdrant inspection failed",
+            metadata={"failure_code": "QDRANT_CHECK_FAILED"},
+        )
+    finally:
+        if store is not None:
+            with contextlib.suppress(Exception):
+                store.close()
 
 
 def check_isolated_storage() -> CheckResult:

@@ -98,10 +98,20 @@ class QdrantVectorStore(VectorStore):
             logger.error("Qdrant vector store is unreachable: %s", err)
             return False, "Qdrant vector store is unreachable"
 
-    def ensure_collection(self, dense_dim: int) -> None:
+    def close(self) -> None:
+        """Release this adapter's HTTP client when its owner is finished."""
+        self._client.close()
+
+    def validate_collection(self, dense_dim: int) -> None:
+        """Inspect existing schema only; never create collections or payload indexes."""
+        self.ensure_collection(dense_dim, read_only=True)
+
+    def ensure_collection(self, dense_dim: int, *, read_only: bool = False) -> None:
         """Create or validate the Qdrant collection with named dense and sparse vectors
-        and payload indexes.
+        and payload indexes. Read-only mode rejects missing schema instead of repairing it.
         """
+        if type(dense_dim) is not int or dense_dim <= 0:
+            raise VectorStoreError("A positive integer dense dimension is required")
         try:
             exists = self._client.collection_exists(self.collection_name)
         except Exception as err:
@@ -110,6 +120,8 @@ class QdrantVectorStore(VectorStore):
             ) from err
 
         if not exists:
+            if read_only:
+                raise VectorStoreError("QDRANT_COLLECTION_MISSING")
             logger.info(
                 "Creating Qdrant collection '%s' with text_dense (%d dims) and text_sparse...",
                 self.collection_name,
@@ -207,6 +219,8 @@ class QdrantVectorStore(VectorStore):
                             f"schema type '{actual_str}', expected '{expected_str}'. Fail closed."
                         )
                 else:
+                    if read_only:
+                        raise VectorStoreError("QDRANT_PAYLOAD_INDEX_MISSING")
                     try:
                         self._client.create_payload_index(
                             collection_name=self.collection_name,
