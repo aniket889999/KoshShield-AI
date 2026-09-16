@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from koshshield.config import Settings, get_settings
+from koshshield.runtime_artifacts import ArtifactCheckError, inspect_gguf
 
 
 class PrerequisiteStatus(StrEnum):
@@ -111,24 +112,32 @@ def check_qwen_gguf(settings: Settings) -> CheckResult:
     model_path = Path(settings.llama_cpp_model_path)
     mmproj_path = Path(settings.llama_cpp_mmproj_path)
 
-    if not model_path.is_file():
+    try:
+        model = inspect_gguf(model_path)
+        projector = inspect_gguf(mmproj_path)
+        if (model["device"], model["inode"]) == (projector["device"], projector["inode"]):
+            raise ArtifactCheckError("GGUF_MODEL_PROJECTOR_IDENTICAL")
+    except ArtifactCheckError as exc:
         return CheckResult(
-            status=PrerequisiteStatus.MISSING_ARTIFACT,
-            details="Qwen GGUF model file not found on local disk",
-        )
-
-    if not mmproj_path.is_file():
-        return CheckResult(
-            status=PrerequisiteStatus.MISSING_ARTIFACT,
-            details="Qwen mmproj projector file not found on local disk",
+            status=(
+                PrerequisiteStatus.MISSING_ARTIFACT
+                if exc.code == "ARTIFACT_MISSING"
+                else PrerequisiteStatus.CONTRACT_MISMATCH
+            ),
+            details="GGUF model/projector inspection failed",
+            metadata={"failure_code": exc.code},
         )
 
     return CheckResult(
         status=PrerequisiteStatus.READY,
-        details="Qwen GGUF model and projector files verified on local disk",
+        details="Distinct GGUF files passed header checks; compatibility and integrity unverified",
         metadata={
-            "model_file_name": model_path.name,
-            "mmproj_file_name": mmproj_path.name,
+            "validation_scope": "header_only",
+            "integrity_verified": False,
+            "model_version": model["version"],
+            "projector_version": projector["version"],
+            "model_size_bytes": model["size_bytes"],
+            "projector_size_bytes": projector["size_bytes"],
         },
     )
 
