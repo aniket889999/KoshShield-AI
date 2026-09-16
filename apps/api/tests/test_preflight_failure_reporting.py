@@ -40,7 +40,9 @@ def test_one_failed_check_does_not_abort_report(
 
     for name in CHECKS:
         monkeypatch.setattr(preflight, f"check_{name}", fail if name == broken else succeed)
-    result = preflight.run_runtime_preflight(Settings(_env_file=None))
+    result = preflight.run_runtime_preflight(
+        Settings(_env_file=None), probe_services=True, probe_storage=True
+    )
     assert len(completed) == len(CHECKS) - 1
     assert result.status == "NOT_READY"
     assert result.missing_categories == [broken]

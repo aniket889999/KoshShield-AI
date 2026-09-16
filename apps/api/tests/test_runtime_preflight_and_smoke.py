@@ -37,9 +37,11 @@ def test_runtime_preflight_reports_honest_structure_and_false_generation() -> No
     }
     assert set(report.prerequisites.keys()) == expected_prereqs
 
-    # Dependencies and isolated storage should always succeed in dev env
+    # Default inspection discovers dependencies but does not write scratch files or probe services.
     assert report.prerequisites["dependencies"]["status"] == "READY"
-    assert report.prerequisites["isolated_storage"]["status"] == "READY"
+    assert report.prerequisites["isolated_storage"]["status"] == "NOT_EXECUTED"
+    assert report.prerequisites["llama_cpp"]["status"] == "NOT_EXECUTED"
+    assert report.prerequisites["qdrant"]["status"] == "NOT_EXECUTED"
 
     # Verify no raw env or secret values leaked in details
     for _name, p in report.prerequisites.items():
@@ -66,7 +68,7 @@ def test_runtime_preflight_ready_when_all_prerequisites_met() -> None:
         patch("koshshield.runtime_preflight.check_llama_cpp", return_value=ready),
         patch("koshshield.runtime_preflight.check_qdrant", return_value=ready),
     ):
-        report = run_runtime_preflight()
+        report = run_runtime_preflight(probe_services=True, probe_storage=True)
         assert report.status == "READY"
         assert len(report.missing_categories) == 0
         assert report.generation_executed is False

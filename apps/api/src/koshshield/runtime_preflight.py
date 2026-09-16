@@ -12,6 +12,7 @@ Never prints raw keys, env dumps, unrestricted paths, or unhandled exceptions.
 
 from __future__ import annotations
 
+import argparse
 import base64
 import contextlib
 import importlib.util
@@ -44,6 +45,7 @@ class PrerequisiteStatus(StrEnum):
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     CONTRACT_MISMATCH = "CONTRACT_MISMATCH"
     ERROR = "ERROR"
+    NOT_EXECUTED = "NOT_EXECUTED"
 
 
 @dataclass
@@ -61,6 +63,9 @@ class PreflightReport:
     timestamp: str
     prerequisites: dict[str, dict[str, Any]]
     missing_categories: list[str]
+    service_probes_enabled: bool = False
+    storage_probe_enabled: bool = False
+    runtime_verified: bool = False
 
 
 def check_bge_m3(settings: Settings) -> CheckResult:
@@ -377,8 +382,13 @@ def _run_check(check: Callable[[], CheckResult]) -> CheckResult:
         )
 
 
-def run_runtime_preflight(settings: Settings | None = None) -> PreflightReport:
-    """Executes all preflight checks independently and compiles structured report."""
+def run_runtime_preflight(
+    settings: Settings | None = None,
+    *,
+    probe_services: bool = False,
+    probe_storage: bool = False,
+) -> PreflightReport:
+    """Inspect locally by default. Network probes and scratch writes require explicit flags."""
     try:
         cfg = settings or get_settings()
     except Exception:
@@ -389,7 +399,9 @@ def run_runtime_preflight(settings: Settings | None = None) -> PreflightReport:
                     details="Runtime configuration is invalid or could not be read",
                     metadata={"failure_code": "CONFIGURATION_INVALID"},
                 )
-            }
+            },
+            probe_services=probe_services,
+            probe_storage=probe_storage,
         )
 
     checks: dict[str, Callable[[], CheckResult]] = {
@@ -401,10 +413,26 @@ def run_runtime_preflight(settings: Settings | None = None) -> PreflightReport:
         "qdrant": partial(check_qdrant, cfg),
         "isolated_storage": check_isolated_storage,
     }
-    return _report({name: _run_check(check) for name, check in checks.items()})
+    results = {}
+    for name, check in checks.items():
+        disabled = (name in {"llama_cpp", "qdrant"} and not probe_services) or (
+            name == "isolated_storage" and not probe_storage
+        )
+        results[name] = (
+            CheckResult(
+                status=PrerequisiteStatus.NOT_EXECUTED,
+                details="Explicit probe flag required; this check was not executed",
+                metadata={"failure_code": "PROBE_NOT_REQUESTED"},
+            )
+            if disabled
+            else _run_check(check)
+        )
+    return _report(results, probe_services=probe_services, probe_storage=probe_storage)
 
 
-def _report(checks: dict[str, CheckResult]) -> PreflightReport:
+def _report(
+    checks: dict[str, CheckResult], *, probe_services: bool, probe_storage: bool
+) -> PreflightReport:
     missing_categories: list[str] = [
         name for name, res in checks.items() if res.status != PrerequisiteStatus.READY
     ]
@@ -427,17 +455,30 @@ def _report(checks: dict[str, CheckResult]) -> PreflightReport:
         timestamp=datetime.now(UTC).isoformat(),
         prerequisites=prereqs_dict,
         missing_categories=missing_categories,
+        service_probes_enabled=probe_services,
+        storage_probe_enabled=probe_storage,
     )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     import logging
+
+    parser = argparse.ArgumentParser(description="Inspect local runtime prerequisites")
+    parser.add_argument(
+        "--probe-services", action="store_true", help="Probe configured local llama.cpp and Qdrant"
+    )
+    parser.add_argument(
+        "--probe-storage", action="store_true", help="Create and clean up owned temporary DB/vault"
+    )
+    args = parser.parse_args(argv)
 
     # Suppress verbose loggers so stdout receives only structured JSON
     previous_disable = logging.root.manager.disable
     try:
         logging.disable(logging.CRITICAL)
-        report = run_runtime_preflight()
+        report = run_runtime_preflight(
+            probe_services=args.probe_services, probe_storage=args.probe_storage
+        )
         print(json.dumps(asdict(report), indent=2))
     finally:
         logging.disable(previous_disable)
