@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from koshshield.config import Settings, get_settings
 from koshshield.database import Base
+from koshshield.evaluation.contracts import parse_ground_truth
 from koshshield.evaluation.fixtures import FixtureValidationError, load_fixture_bundle
 from koshshield.models import (
     AuditEvent,
@@ -821,6 +822,14 @@ def _compile_variant_report(
     executed_providers: dict[str, bool] | None = None,
 ) -> VariantRunReport:
     # Check if any stage failed or was not executed
+    stages = dict(stages)
+    _mark_remaining_stages_not_executed(stages, "STAGE_NOT_RECORDED")
+    if stages["answer_validation"].status == StageStatus.PASSED and (
+        not question_checks or any(q.status != StageStatus.PASSED for q in question_checks.values())
+    ):
+        stages["answer_validation"] = StageResult(
+            status=StageStatus.FAILED, failure_code="QUESTION_RESULTS_INCOMPLETE"
+        )
     has_failed = any(s.status == StageStatus.FAILED for s in stages.values())
     has_not_executed = any(s.status == StageStatus.NOT_EXECUTED for s in stages.values())
 
@@ -870,11 +879,17 @@ def _compile_variant_report(
 
 def run_smoke(settings: Settings | None = None) -> SmokeReport:
     """Runs isolated smoke verification against both native and scanned variants."""
-    cfg = settings or get_settings()
+    try:
+        cfg = settings or get_settings()
+    except Exception:
+        return _failed_smoke_report("CONFIGURATION_INVALID")
     try:
         bundle = load_fixture_bundle(_find_fixture_dir())
-        ground_truth = bundle.evaluation_json("expected/proc001-ground-truth.json")
-        inputs = {name: bundle.input_pdf(name) for name in ground_truth.get("input_variants", [])}
+        truth = parse_ground_truth(
+            bundle.evaluation_json("expected/proc001-ground-truth.json"), bundle.case_id
+        )
+        ground_truth = truth.model_dump()
+        inputs = {name: bundle.input_pdf(name) for name in truth.input_variants}
     except FixtureValidationError as exc:
         return _failed_smoke_report(exc.code)
     except OSError:
