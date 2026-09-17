@@ -40,6 +40,7 @@ from koshshield.database import Base
 from koshshield.evaluation.contracts import parse_ground_truth
 from koshshield.evaluation.evidence import check_citations, prepare_model_evidence
 from koshshield.evaluation.fixtures import FixtureValidationError, load_fixture_bundle
+from koshshield.evaluation.visuals import load_probe_images
 from koshshield.models import (
     AuditEvent,
     DocumentChunkRecord,
@@ -95,6 +96,7 @@ class QuestionCheckResult:
     citation_integrity_matched: bool | None = None
     citation_count: int | None = None
     retrieved_evidence_pages_matched: bool | None = None
+    visual_input_sent: bool | None = None
 
 
 @dataclass
@@ -685,6 +687,7 @@ def run_single_variant(
             t0 = time.perf_counter()
             try:
                 all_questions_passed = True
+                any_question_not_executed = False
                 for q in ground_truth.get("questions", []):
                     qid = q["id"]
                     evidence = retrieved_evidence_by_qid.get(qid)
@@ -698,30 +701,28 @@ def run_single_variant(
                         max_page=ground_truth["expected_pages"],
                     )
 
-                    # For visual probe (Q4), if permitted, include authorized masked image
+                    # A vision probe cannot silently fall back to a text-only request.
                     images_data_urls = []
-                    if q.get("visual_probe") and evidence and evidence.items:
-                        for item in evidence.items:
-                            page_rec = session.scalar(
-                                select(DocumentPageRecord).where(
-                                    DocumentPageRecord.document_id == item.document_id,
-                                    DocumentPageRecord.page_number == item.page_number,
-                                )
+                    if q.get("visual_probe"):
+                        try:
+                            images_data_urls = load_probe_images(
+                                session=session,
+                                vault=scratch_vault,
+                                evidence=evidence_chunks,
+                                document_id=doc.id,
+                                redaction_version=doc.version,
+                                required_pages=q["required_evidence_pages"],
                             )
-                            if (
-                                page_rec
-                                and page_rec.visual_privacy_status == "APPROVED"
-                                and page_rec.encrypted_masked_page_image_path
-                                and page_rec.masked_page_image_sha256
-                            ):
-                                img_bytes = scratch_vault.decrypt(
-                                    f"{item.document_id}_p{item.page_number}_masked",
-                                    page_rec.masked_page_image_sha256,
-                                    Path(page_rec.encrypted_masked_page_image_path),
-                                )
-                                b64_img = base64.b64encode(img_bytes).decode("ascii")
-                                images_data_urls.append(f"data:image/png;base64,{b64_img}")
-                                break
+                        except FixtureValidationError as exc:
+                            any_question_not_executed = True
+                            all_questions_passed = False
+                            question_checks[qid] = QuestionCheckResult(
+                                question_id=qid,
+                                status=StageStatus.NOT_EXECUTED,
+                                failure_code=exc.code,
+                                visual_input_sent=False,
+                            )
+                            continue
 
                     ans_resp = real_llama_client.generate_grounded_answer(
                         query=q["query"],
@@ -775,14 +776,24 @@ def run_single_variant(
                         citation_integrity_matched=citations.identities_valid,
                         citation_count=citations.citation_count,
                         retrieved_evidence_pages_matched=citations.retrieved_pages_matched,
+                        visual_input_sent=bool(images_data_urls) if q.get("visual_probe") else None,
                     )
 
                 stages["grounded_answering"] = StageResult(
-                    status=StageStatus.PASSED,
+                    status=StageStatus.NOT_EXECUTED
+                    if any_question_not_executed
+                    else StageStatus.PASSED,
                     duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+                    failure_code="VISUAL_PROBE_NOT_EXECUTED" if any_question_not_executed else None,
                 )
                 stages["answer_validation"] = StageResult(
-                    status=StageStatus.PASSED if all_questions_passed else StageStatus.FAILED,
+                    status=(
+                        StageStatus.PASSED
+                        if all_questions_passed
+                        else StageStatus.FAILED
+                        if any(q.status == StageStatus.FAILED for q in question_checks.values())
+                        else StageStatus.NOT_EXECUTED
+                    ),
                     duration_ms=round((time.perf_counter() - t0) * 1000.0, 2),
                 )
             except Exception as err:
@@ -868,6 +879,8 @@ def _compile_variant_report(
             "citation_integrity_matched": qc.citation_integrity_matched,
             "citation_count": qc.citation_count,
             "retrieved_evidence_pages_matched": qc.retrieved_evidence_pages_matched,
+            "visual_input_sent": qc.visual_input_sent,
+            "failure_code": qc.failure_code,
         }
         for qid, qc in question_checks.items()
     }
