@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from koshshield.config import Settings, get_settings
 from koshshield.database import Base
 from koshshield.evaluation.contracts import parse_ground_truth
+from koshshield.evaluation.evidence import check_citations, prepare_model_evidence
 from koshshield.evaluation.fixtures import FixtureValidationError, load_fixture_bundle
 from koshshield.models import (
     AuditEvent,
@@ -91,6 +92,9 @@ class QuestionCheckResult:
     supported_facts_matched: bool | None = None
     insufficient_evidence_matched: bool | None = None
     failure_code: str | None = None
+    citation_integrity_matched: bool | None = None
+    citation_count: int | None = None
+    retrieved_evidence_pages_matched: bool | None = None
 
 
 @dataclass
@@ -684,15 +688,15 @@ def run_single_variant(
                 for q in ground_truth.get("questions", []):
                     qid = q["id"]
                     evidence = retrieved_evidence_by_qid.get(qid)
-                    evidence_chunks = [
-                        {
-                            "chunk_id": item.chunk_id,
-                            "document_id": item.document_id,
-                            "page_number": item.page_number,
-                            "masked_text": item.masked_text,
-                        }
-                        for item in (evidence.items if evidence else [])
-                    ]
+                    evidence_chunks = prepare_model_evidence(
+                        evidence,
+                        tenant_id=tenant_id,
+                        document_id=doc.id,
+                        index_version=index_result.active_index_version,
+                        redaction_version=doc.version,
+                        evidence_hash=doc.sha256,
+                        max_page=ground_truth["expected_pages"],
+                    )
 
                     # For visual probe (Q4), if permitted, include authorized masked image
                     images_data_urls = []
@@ -728,13 +732,10 @@ def run_single_variant(
 
                     # Validate question checks against ground truth
                     # 1. Evidence pages
-                    retrieved_pages = {
-                        item.page_number for item in (evidence.items if evidence else [])
-                    }
-                    expected_pages = set(q.get("required_evidence_pages", []))
-                    pages_match = (
-                        expected_pages.issubset(retrieved_pages) if expected_pages else True
+                    citations = check_citations(
+                        ans_resp.cited_chunk_ids, evidence_chunks, q["required_evidence_pages"]
                     )
+                    pages_match = citations.cited_pages_matched
 
                     # 2. Insufficient evidence match
                     insufficient_match = ans_resp.insufficient_evidence == q.get(
@@ -771,6 +772,9 @@ def run_single_variant(
                         evidence_pages_matched=pages_match,
                         supported_facts_matched=facts_match,
                         insufficient_evidence_matched=insufficient_match,
+                        citation_integrity_matched=citations.identities_valid,
+                        citation_count=citations.citation_count,
+                        retrieved_evidence_pages_matched=citations.retrieved_pages_matched,
                     )
 
                 stages["grounded_answering"] = StageResult(
@@ -861,6 +865,9 @@ def _compile_variant_report(
             "evidence_pages_matched": qc.evidence_pages_matched,
             "supported_facts_matched": qc.supported_facts_matched,
             "insufficient_evidence_matched": qc.insufficient_evidence_matched,
+            "citation_integrity_matched": qc.citation_integrity_matched,
+            "citation_count": qc.citation_count,
+            "retrieved_evidence_pages_matched": qc.retrieved_evidence_pages_matched,
         }
         for qid, qc in question_checks.items()
     }
