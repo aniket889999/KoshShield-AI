@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from koshshield.config import Settings, get_settings
 from koshshield.database import Base
+from koshshield.evaluation.fixtures import FixtureValidationError, load_fixture_bundle
 from koshshield.models import (
     AuditEvent,
     DocumentChunkRecord,
@@ -117,6 +118,8 @@ class SmokeReport:
     variants: dict[str, dict[str, Any]]
     summary: dict[str, int]
     disclaimer: str
+    fixture_integrity_verified: bool = False
+    failure_code: str | None = None
 
 
 FORBIDDEN_SYNTHETIC_PII = [
@@ -181,30 +184,11 @@ def _check_pii_leakage(session: Session) -> bool:
 def run_single_variant(
     *,
     variant_name: str,
-    fixture_dir: Path,
+    pdf_bytes: bytes,
     ground_truth: dict[str, Any],
     settings: Settings,
 ) -> VariantRunReport:
     """Runs a single fixture variant independently with isolated scratch DB and vault."""
-    pdf_path = fixture_dir / "inputs" / variant_name
-    if not pdf_path.is_file():
-        return VariantRunReport(
-            variant=variant_name,
-            status=StageStatus.FAILED,
-            failure_code="FIXTURE_INPUT_MISSING",
-            stages={},
-            question_checks={},
-            synthetic_pii_clean=None,
-            executed_providers={
-                "bge_m3": False,
-                "qdrant": False,
-                "ocr": False,
-                "llama_cpp": False,
-            },
-            details=f"Fixture file '{variant_name}' not found",
-        )
-
-    pdf_bytes = pdf_path.read_bytes()
     scratch_dir = tempfile.mkdtemp(prefix=f"koshshield_smoke_{variant_name}_")
     scratch_path = Path(scratch_dir)
 
@@ -887,10 +871,14 @@ def _compile_variant_report(
 def run_smoke(settings: Settings | None = None) -> SmokeReport:
     """Runs isolated smoke verification against both native and scanned variants."""
     cfg = settings or get_settings()
-    fixture_dir = _find_fixture_dir()
-    ground_truth = json.loads(
-        (fixture_dir / "expected" / "proc001-ground-truth.json").read_text(encoding="utf-8")
-    )
+    try:
+        bundle = load_fixture_bundle(_find_fixture_dir())
+        ground_truth = bundle.evaluation_json("expected/proc001-ground-truth.json")
+        inputs = {name: bundle.input_pdf(name) for name in ground_truth.get("input_variants", [])}
+    except FixtureValidationError as exc:
+        return _failed_smoke_report(exc.code)
+    except OSError:
+        return _failed_smoke_report("FIXTURE_UNREADABLE")
 
     real_providers_configured = {
         "bge_m3": True,
@@ -933,7 +921,7 @@ def run_smoke(settings: Settings | None = None) -> SmokeReport:
     for variant in variants:
         v_rep = run_single_variant(
             variant_name=variant,
-            fixture_dir=fixture_dir,
+            pdf_bytes=inputs[variant],
             ground_truth=ground_truth,
             settings=cfg,
         )
@@ -983,6 +971,31 @@ def run_smoke(settings: Settings | None = None) -> SmokeReport:
             "Synthetic-data smoke results only; not a production accuracy or "
             "industrial benchmark claim."
         ),
+        fixture_integrity_verified=True,
+    )
+
+
+def _failed_smoke_report(code: str) -> SmokeReport:
+    providers = dict.fromkeys(("bge_m3", "qdrant", "ocr", "llama_cpp"), False)
+    return SmokeReport(
+        report_type="smoke_local",
+        status="FAILED",
+        overall_success=False,
+        timestamp=datetime.now(UTC).isoformat(),
+        synthetic_fixture="PROC-001",
+        model_identifiers={},
+        real_providers_configured=providers.copy(),
+        real_providers_executed=providers.copy(),
+        real_provider_flags={},
+        variants={},
+        summary={
+            "total_stages": 0,
+            "passed_stages": 0,
+            "failed_stages": 0,
+            "not_executed_stages": 0,
+        },
+        disclaimer="Fixture/configuration checks failed before runtime execution.",
+        failure_code=code,
     )
 
 
