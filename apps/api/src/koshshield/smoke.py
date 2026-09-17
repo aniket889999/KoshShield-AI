@@ -37,13 +37,13 @@ from sqlalchemy.orm import Session
 
 from koshshield.config import Settings, get_settings
 from koshshield.database import Base
-from koshshield.evaluation.contracts import parse_ground_truth
+from koshshield.evaluation.contracts import Question, parse_ground_truth
 from koshshield.evaluation.evidence import check_citations, prepare_model_evidence
 from koshshield.evaluation.fixtures import FixtureValidationError, load_fixture_bundle
+from koshshield.evaluation.numeric_checks import contains_synthetic_pii, numeric_facts_present
 from koshshield.evaluation.visuals import load_probe_images
 from koshshield.models import (
     AuditEvent,
-    DocumentChunkRecord,
     DocumentPageRecord,
     DocumentState,
     FindingStatus,
@@ -97,6 +97,8 @@ class QuestionCheckResult:
     citation_count: int | None = None
     retrieved_evidence_pages_matched: bool | None = None
     visual_input_sent: bool | None = None
+    numeric_checks_passed: bool | None = None
+    semantic_support_verified: bool = False
 
 
 @dataclass
@@ -127,6 +129,7 @@ class SmokeReport:
     disclaimer: str
     fixture_integrity_verified: bool = False
     failure_code: str | None = None
+    answer_validation_scope: str = "deterministic_checks_only_not_semantic_entailment"
 
 
 FORBIDDEN_SYNTHETIC_PII = [
@@ -169,13 +172,7 @@ def _check_pii_leakage(session: Session) -> bool:
             if pii in text:
                 return False
 
-    # Check chunks masked text
-    chunks = list(session.scalars(select(DocumentChunkRecord)))
-    for c in chunks:
-        text = c.masked_text or ""
-        for pii in FORBIDDEN_SYNTHETIC_PII:
-            if pii in text:
-                return False
+    # Chunk records hold hashes/offsets, not text. Retrieved context is checked before generation.
 
     # Check audit events
     audit_records = list(session.scalars(select(AuditEvent)))
@@ -700,6 +697,12 @@ def run_single_variant(
                         evidence_hash=doc.sha256,
                         max_page=ground_truth["expected_pages"],
                     )
+                    if any(
+                        contains_synthetic_pii(text, FORBIDDEN_SYNTHETIC_PII)
+                        for text in [q["query"], *(item["masked_text"] for item in evidence_chunks)]
+                    ):
+                        synthetic_pii_clean = False
+                        raise FixtureValidationError("MODEL_CONTEXT_PII_LEAKAGE")
 
                     # A vision probe cannot silently fall back to a text-only request.
                     images_data_urls = []
@@ -743,25 +746,19 @@ def run_single_variant(
                         "insufficient_evidence", False
                     )
 
-                    # 3. Facts match
-                    facts_match = True
-                    for fact in q.get("required_facts", []):
-                        val = fact.get("value")
-                        if val is not None and str(val) not in ans_resp.answer:
-                            facts_match = False
-                        proposed = fact.get("proposed")
-                        if proposed is not None and str(proposed) not in ans_resp.answer:
-                            facts_match = False
+                    # These checks detect missing quantities, not semantic support of an answer.
+                    numeric_match = numeric_facts_present(
+                        ans_resp.answer, Question.model_validate(q).required_facts
+                    )
 
                     # Check forbidden PII in generated answer
-                    for pii in FORBIDDEN_SYNTHETIC_PII:
-                        if pii in ans_resp.answer:
-                            synthetic_pii_clean = False
+                    if contains_synthetic_pii(ans_resp.answer, FORBIDDEN_SYNTHETIC_PII):
+                        synthetic_pii_clean = False
 
                     q_passed = (
                         pages_match
                         and insufficient_match
-                        and facts_match
+                        and numeric_match is not False
                         and (synthetic_pii_clean is True)
                     )
                     if not q_passed:
@@ -771,12 +768,24 @@ def run_single_variant(
                         question_id=qid,
                         status=StageStatus.PASSED if q_passed else StageStatus.FAILED,
                         evidence_pages_matched=pages_match,
-                        supported_facts_matched=facts_match,
+                        supported_facts_matched=None,
+                        numeric_checks_passed=numeric_match,
                         insufficient_evidence_matched=insufficient_match,
                         citation_integrity_matched=citations.identities_valid,
                         citation_count=citations.citation_count,
                         retrieved_evidence_pages_matched=citations.retrieved_pages_matched,
                         visual_input_sent=bool(images_data_urls) if q.get("visual_probe") else None,
+                        failure_code=(
+                            "CITATION_CHECK_FAILED"
+                            if not pages_match
+                            else "INSUFFICIENT_EVIDENCE_MISMATCH"
+                            if not insufficient_match
+                            else "NUMERIC_FACT_CHECK_FAILED"
+                            if numeric_match is False
+                            else "SYNTHETIC_PII_LEAKAGE_DETECTED"
+                            if synthetic_pii_clean is not True
+                            else None
+                        ),
                     )
 
                 stages["grounded_answering"] = StageResult(
@@ -881,6 +890,8 @@ def _compile_variant_report(
             "retrieved_evidence_pages_matched": qc.retrieved_evidence_pages_matched,
             "visual_input_sent": qc.visual_input_sent,
             "failure_code": qc.failure_code,
+            "numeric_checks_passed": qc.numeric_checks_passed,
+            "semantic_support_verified": qc.semantic_support_verified,
         }
         for qid, qc in question_checks.items()
     }
@@ -1004,7 +1015,8 @@ def run_smoke(settings: Settings | None = None) -> SmokeReport:
         },
         disclaimer=(
             "Synthetic-data smoke results only; not a production accuracy or "
-            "industrial benchmark claim."
+            "industrial benchmark claim. Numeric/unit presence and citation identity "
+            "do not establish semantic correctness or supplier attribution."
         ),
         fixture_integrity_verified=True,
     )
