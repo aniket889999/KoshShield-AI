@@ -1,9 +1,10 @@
 from fastapi import APIRouter
 
-from koshshield.api.routes import agent, audit, documents, health, retrieval, review
+from koshshield.api.routes import agent, audit, documents, health, readiness, retrieval, review
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["system"])
+api_router.include_router(readiness.router, prefix="/system", tags=["readiness"])
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
 api_router.include_router(audit.router, prefix="/audit", tags=["audit"])
 api_router.include_router(review.router, tags=["review"])
