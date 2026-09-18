@@ -12,6 +12,10 @@ from koshshield.security.context import RequestContextDependency
 from koshshield.security.file_validation import UnsupportedDocumentError
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.documents import accept_document
+from koshshield.services.lifecycle import (
+    DocumentLifecycleTimeline,
+    build_document_lifecycle_timeline,
+)
 
 router = APIRouter()
 SessionDependency = Annotated[Session, Depends(get_db)]
@@ -62,3 +66,23 @@ async def upload_document(
         raise HTTPException(status_code=415, detail=str(exc)) from exc
     except VaultConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/{document_id}/timeline", response_model=DocumentLifecycleTimeline)
+def get_document_timeline(
+    document_id: str,
+    session: SessionDependency,
+    context: RequestContextDependency,
+) -> DocumentLifecycleTimeline:
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == context.tenant_id,
+        )
+    )
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or access denied for tenant",
+        )
+    return build_document_lifecycle_timeline(session, document)
