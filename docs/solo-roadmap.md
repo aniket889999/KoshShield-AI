@@ -1,6 +1,16 @@
 # Solo development roadmap
 
-## Current procurement evaluation checkpoint (2026-09-17)
+## Current demo operations layer checkpoint (2026-09-18)
+
+- Typed demo-readiness domain model reports all 7 core components with safe, standardized failure codes.
+- Authenticated, sanitized `/api/v1/system/readiness` endpoint guards against internal path and secret leaks.
+- Auditable 7-stage document lifecycle timeline (`/api/v1/documents/{id}/timeline`) exposes verifiable stage transitions and cryptographic audit records.
+- Privacy-gated evidence catalog (`/api/v1/documents/{id}/evidence`) serves verified masked snippets only after governance approval, leaving original files in the encrypted vault.
+- Strictly local-only operational health checks (`/api/v1/health/local`) reject outbound network calls and enforce loopback boundaries.
+- Frontend operations console is enriched with a dedicated Readiness & Lifecycle workspace distinguishing `PASSED`, `FAILED`, and `NOT_EXECUTED` states.
+- Operational documentation and evaluator guide: [Demo operations](demo_operations.md).
+
+## Procurement evaluation checkpoint (2026-09-17)
 
 - Manifest-verified fixture snapshots and strict source/answer-key schemas are implemented.
 - Smoke grading binds context/citations to the source and requires actual approved images for vision.
