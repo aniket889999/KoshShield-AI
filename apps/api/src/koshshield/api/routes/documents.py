@@ -12,6 +12,10 @@ from koshshield.security.context import RequestContextDependency
 from koshshield.security.file_validation import UnsupportedDocumentError
 from koshshield.security.vault import EncryptedVault, VaultConfigurationError
 from koshshield.services.documents import accept_document
+from koshshield.services.evidence import (
+    DocumentEvidenceCatalog,
+    build_document_evidence_catalog,
+)
 from koshshield.services.lifecycle import (
     DocumentLifecycleTimeline,
     build_document_lifecycle_timeline,
@@ -86,3 +90,23 @@ def get_document_timeline(
             detail="Document not found or access denied for tenant",
         )
     return build_document_lifecycle_timeline(session, document)
+
+
+@router.get("/{document_id}/evidence", response_model=DocumentEvidenceCatalog)
+def get_document_evidence(
+    document_id: str,
+    session: SessionDependency,
+    context: RequestContextDependency,
+) -> DocumentEvidenceCatalog:
+    document = session.scalar(
+        select(DocumentRecord).where(
+            DocumentRecord.id == document_id,
+            DocumentRecord.tenant_id == context.tenant_id,
+        )
+    )
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or access denied for tenant",
+        )
+    return build_document_evidence_catalog(session, document, tenant_id=context.tenant_id)
