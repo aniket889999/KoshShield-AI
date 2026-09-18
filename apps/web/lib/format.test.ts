@@ -4,6 +4,8 @@ import {
   formatBytes,
   formatConfidence,
   formatFindingLabel,
+  formatReadinessStatus,
+  formatStageStatus,
   formatStatusLabel,
   shortHash,
 } from "./format";
@@ -37,5 +39,22 @@ describe("format helpers", () => {
     expect(formatStatusLabel("INDEXED")).toBe("Indexed");
     expect(formatStatusLabel("INDEX_FAILED")).toBe("Index failed");
     expect(formatStatusLabel("ENCRYPTED")).toBe("Encrypted");
+  });
+
+  it("formats lifecycle stage statuses", () => {
+    expect(formatStageStatus("PASSED")).toBe("Passed");
+    expect(formatStageStatus("FAILED")).toBe("Failed");
+    expect(formatStageStatus("IN_PROGRESS")).toBe("In progress");
+    expect(formatStageStatus("PENDING")).toBe("Pending");
+    expect(formatStageStatus("NOT_EXECUTED")).toBe("Not executed");
+  });
+
+  it("formats readiness component statuses", () => {
+    expect(formatReadinessStatus("READY")).toBe("Ready");
+    expect(formatReadinessStatus("MISSING_ARTIFACT")).toBe("Missing artifact");
+    expect(formatReadinessStatus("SERVICE_UNAVAILABLE")).toBe("Service offline");
+    expect(formatReadinessStatus("CONTRACT_MISMATCH")).toBe("Contract mismatch");
+    expect(formatReadinessStatus("NOT_CONFIGURED")).toBe("Not configured");
+    expect(formatReadinessStatus("NOT_EXECUTED")).toBe("Not executed");
   });
 });

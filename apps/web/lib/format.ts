@@ -70,3 +70,43 @@ export function formatStatusLabel(status: string): string {
       return status.replace(/_/g, " ");
   }
 }
+
+export function formatStageStatus(status: string): string {
+  switch (status.toUpperCase()) {
+    case "PASSED":
+      return "Passed";
+    case "FAILED":
+      return "Failed";
+    case "IN_PROGRESS":
+      return "In progress";
+    case "PENDING":
+      return "Pending";
+    case "SKIPPED":
+      return "Skipped";
+    case "NOT_EXECUTED":
+      return "Not executed";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}
+
+export function formatReadinessStatus(status: string): string {
+  switch (status.toUpperCase()) {
+    case "READY":
+      return "Ready";
+    case "MISSING_ARTIFACT":
+      return "Missing artifact";
+    case "SERVICE_UNAVAILABLE":
+      return "Service offline";
+    case "CONTRACT_MISMATCH":
+      return "Contract mismatch";
+    case "NOT_CONFIGURED":
+      return "Not configured";
+    case "NOT_EXECUTED":
+      return "Not executed";
+    case "ERROR":
+      return "Error";
+    default:
+      return status.replace(/_/g, " ");
+  }
+}

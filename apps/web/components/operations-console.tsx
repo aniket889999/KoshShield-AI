@@ -85,8 +85,9 @@ import {
   shortHash,
 } from "@/lib/format";
 import { AgentApprovalsWorkspace } from "@/components/agent-approvals-workspace";
+import { DemoOperationsWorkspace } from "@/components/demo-operations-workspace";
 
-type NavTab = "Overview" | "Documents" | "Review queue" | "Intelligence" | "Approvals" | "Audit trail";
+type NavTab = "Overview" | "Documents" | "Review queue" | "Intelligence" | "Approvals" | "Readiness & Lifecycle" | "Audit trail";
 
 const navigation: { label: NavTab; icon: ComponentType<{ size?: number }> }[] = [
   { label: "Overview", icon: Gauge },
@@ -94,6 +95,7 @@ const navigation: { label: NavTab; icon: ComponentType<{ size?: number }> }[] = 
   { label: "Review queue", icon: FileCheck2 },
   { label: "Intelligence", icon: FileSearch },
   { label: "Approvals", icon: UserCheck },
+  { label: "Readiness & Lifecycle", icon: ShieldCheck },
   { label: "Audit trail", icon: History },
 ];
 
@@ -1876,6 +1878,8 @@ export function OperationsConsole() {
           )}
 
           {activeNav === "Approvals" && <AgentApprovalsWorkspace />}
+
+          {activeNav === "Readiness & Lifecycle" && <DemoOperationsWorkspace />}
 
           {/* Fallback for future audit expansion */}
           {activeNav === "Audit trail" && (

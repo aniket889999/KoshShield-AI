@@ -460,3 +460,137 @@ export function executeAgentAction(runId: string, version: number) {
     body: JSON.stringify({ version }),
   });
 }
+
+export interface ComponentReadiness {
+  component_id: string;
+  display_name: string;
+  category: string;
+  status:
+    | "READY"
+    | "MISSING_ARTIFACT"
+    | "SERVICE_UNAVAILABLE"
+    | "CONTRACT_MISMATCH"
+    | "NOT_CONFIGURED"
+    | "NOT_EXECUTED"
+    | "ERROR";
+  failure_code?: string | null;
+  details: string;
+  executable: boolean;
+  local_only: boolean;
+  configuration_status: string;
+  live_status: string;
+}
+
+export interface DemoReadinessReport {
+  tenant_id?: string;
+  report_type: string;
+  overall_status: "READY" | "DEGRADED" | "DEMO_RESTRICTED" | "NOT_READY";
+  can_run_offline_demo: boolean;
+  can_run_live_inference: boolean;
+  executable_components_count: number;
+  total_components_count: number;
+  components: ComponentReadiness[];
+  missing_components: string[];
+  summary: string;
+  timestamp: string;
+  disclaimer: string;
+}
+
+export interface LifecycleStageRecord {
+  stage_id: "UPLOAD" | "EXTRACTION" | "PII_REVIEW" | "APPROVAL" | "INDEXING" | "RETRIEVAL" | "CLEANUP";
+  display_name: string;
+  status: "PASSED" | "FAILED" | "IN_PROGRESS" | "PENDING" | "SKIPPED" | "NOT_EXECUTED";
+  failure_code?: string | null;
+  summary: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  metrics: Record<string, unknown>;
+}
+
+export interface TimelineAuditEvent {
+  event_id: string;
+  event_type: string;
+  actor_id: string;
+  stage: string;
+  timestamp: string;
+  event_hash: string;
+  details: Record<string, unknown>;
+}
+
+export interface DocumentLifecycleTimeline {
+  document_id: string;
+  tenant_id: string;
+  filename: string;
+  media_type: string;
+  size_bytes: number;
+  sha256: string;
+  current_status: string;
+  current_version: number;
+  stages: LifecycleStageRecord[];
+  audit_events: TimelineAuditEvent[];
+  generated_at: string;
+  disclaimer: string;
+}
+
+export interface DocumentEvidenceChunk {
+  chunk_id: string;
+  chunk_sequence: number;
+  page_number: number;
+  char_start: number;
+  char_end: number;
+  masked_snippet: string;
+  masked_content_hash: string;
+  citation_label: string;
+  visual_regions: RetrievalVisualRegion[];
+}
+
+export interface DocumentEvidenceCatalog {
+  document_id: string;
+  tenant_id: string;
+  filename: string;
+  current_status: string;
+  index_version?: number | null;
+  chunk_count: number;
+  chunks: DocumentEvidenceChunk[];
+  residual_pii_checked: boolean;
+  privacy_gate_verdict: string;
+  disclaimer: string;
+}
+
+export interface ServiceHealthProbe {
+  service_id: string;
+  display_name: string;
+  status: "ready" | "unavailable" | "not_configured";
+  failure_code?: string | null;
+  details: string;
+  local_only: boolean;
+  endpoint_hostname?: string | null;
+}
+
+export interface LocalOperationalHealthResponse {
+  boundary: string;
+  network_isolated: boolean;
+  external_calls_blocked: boolean;
+  overall_healthy: boolean;
+  safe_mode_active: boolean;
+  services: Record<string, ServiceHealthProbe>;
+  checked_at: string;
+  disclaimer: string;
+}
+
+export function getDemoReadiness(probeServices: boolean = false) {
+  const query = probeServices ? "?probe_services=true" : "";
+  return request<DemoReadinessReport>(`/system/readiness${query}`);
+}
+
+export function getDocumentTimeline(documentId: string) {
+  return request<DocumentLifecycleTimeline>(`/documents/${documentId}/timeline`);
+}
+
+export function getDocumentEvidenceCatalog(documentId: string) {
+  return request<DocumentEvidenceCatalog>(`/documents/${documentId}/evidence`);
+}
+
+export function getLocalHealth() {
+  return request<LocalOperationalHealthResponse>("/health/local");
+}
