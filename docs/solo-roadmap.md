@@ -1,6 +1,15 @@
 # Solo development roadmap
 
-## Current runtime inspection checkpoint (2026-09-16)
+## Current procurement evaluation checkpoint (2026-09-17)
+
+- Manifest-verified fixture snapshots and strict source/answer-key schemas are implemented.
+- Smoke grading binds context/citations to the source and requires actual approved images for vision.
+- Complete numeric/unit checks replace substring matching without claiming semantic entailment.
+- `make evaluate-fixtures` recomputes supplier comparisons and CSV outcomes without models/services.
+- No acquisition or installation was performed; Stage 0 live integration remains incomplete.
+- Operator workflow and grading limits: [Procurement evaluation](procurement_evaluation.md).
+
+## Runtime inspection checkpoint (2026-09-16)
 
 - Bounded GGUF header checks and BGE-M3 tokenizer/trained-head bundle validation are implemented.
 - OCR requires nonempty inference file pairs and the adapter's supported PaddleOCR 2.x API.

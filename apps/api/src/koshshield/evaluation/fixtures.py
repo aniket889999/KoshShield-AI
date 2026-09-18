@@ -16,6 +16,13 @@ MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 
 
+def default_fixture_dir() -> Path:
+    root = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "proc001"
+    if not root.is_dir():
+        raise FixtureValidationError("FIXTURE_UNAVAILABLE")
+    return root
+
+
 class FixtureValidationError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code

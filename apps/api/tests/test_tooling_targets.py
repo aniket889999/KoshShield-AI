@@ -15,6 +15,7 @@ import pytest
         ("lint-api", "ruff check apps/api scripts", "pnpm"),
         ("runtime-preflight", "python -B -m koshshield.runtime_preflight", "--probe-"),
         ("runtime-probes", "--probe-services --probe-storage", "docker compose up"),
+        ("evaluate-fixtures", "python -B -m koshshield.evaluation.reference", "koshshield.smoke"),
     ],
 )
 def test_make_target_contract(target: str, expected: str, forbidden: str) -> None:

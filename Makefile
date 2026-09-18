@@ -1,5 +1,6 @@
 .PHONY: bootstrap dev-api dev-web infra-up infra-down tool-runner-build test lint generate-key migrate runtime-preflight smoke-local provision-runtime
 .PHONY: test-api test-web lint-api lint-web dependency-inventory prepare-dependencies runtime-probes
+.PHONY: evaluate-fixtures
 
 WHEELHOUSE ?= data/wheelhouse
 
@@ -54,6 +55,9 @@ runtime-probes:
 
 smoke-local:
 	.venv/bin/python -m koshshield.smoke
+
+evaluate-fixtures:
+	.venv/bin/python -B -m koshshield.evaluation.reference
 
 provision-runtime:
 	.venv/bin/python scripts/provision_local_runtime.py --dry-run
