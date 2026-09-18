@@ -10,6 +10,10 @@ from sqlalchemy.orm import Session
 from koshshield.config import Settings, get_settings
 from koshshield.database import get_db
 from koshshield.services.extraction.paddle_ocr import PaddleOcrAdapter
+from koshshield.services.local_health import (
+    LocalOperationalHealthResponse,
+    evaluate_local_health,
+)
 
 router = APIRouter()
 SessionDependency = Annotated[Session, Depends(get_db)]
@@ -54,6 +58,15 @@ def liveness() -> dict[str, str]:
 def readiness(session: SessionDependency) -> dict[str, str]:
     session.execute(text("SELECT 1"))
     return {"status": "ready"}
+
+
+@router.get("/health/local", response_model=LocalOperationalHealthResponse)
+async def local_health(
+    session: SessionDependency,
+    settings: SettingsDependency,
+) -> LocalOperationalHealthResponse:
+    """Strictly local-only, fail-closed operational health checks."""
+    return await evaluate_local_health(settings, session)
 
 
 @router.get("/system/status", response_model=SystemStatus)
