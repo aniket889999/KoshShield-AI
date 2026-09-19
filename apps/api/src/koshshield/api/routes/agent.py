@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,11 +13,18 @@ from koshshield.schemas import (
     AgentApprovalResponse,
     AgentExecuteRequest,
     AgentRunResponse,
+    ApprovalRequestDetailResponse,
 )
 from koshshield.security.context import (
     ApproverContextDependency,
     ExecutorContextDependency,
     RequestContextDependency,
+    RequesterContextDependency,
+)
+from koshshield.services.agent.actions import get_action_risk_level
+from koshshield.services.agent.lifecycle import (
+    DEFAULT_APPROVAL_TTL_SECONDS,
+    is_approval_expired,
 )
 from koshshield.services.agent.service import (
     AgentRunConflictError,
@@ -56,6 +64,34 @@ def to_run_response(
     run: AgentRunRecord,
 ) -> AgentRunResponse:
     approval = service.get_approval(session, run.id)
+    approval_resp = None
+    if approval:
+        expires_at = approval.created_at + timedelta(seconds=DEFAULT_APPROVAL_TTL_SECONDS)
+        is_expired = is_approval_expired(approval.created_at)
+        doc_id = (
+            str(run.arguments_json.get("document_id"))
+            if "document_id" in run.arguments_json
+            else None
+        )
+        doc_ver = (
+            int(run.arguments_json["document_version"])
+            if "document_version" in run.arguments_json
+            else None
+        )
+        approval_resp = AgentApprovalResponse(
+            decision=approval.decision,
+            reviewer_id=approval.reviewer_id,
+            version=approval.version,
+            decided_at=approval.decided_at,
+            expires_at=expires_at,
+            is_expired=is_expired,
+            action_name=run.tool_name,
+            risk_level=get_action_risk_level(run.tool_name).value,
+            input_digest=run.arguments_hash,
+            document_id=doc_id,
+            document_version=doc_ver,
+        )
+
     return AgentRunResponse(
         id=run.id,
         tenant_id=run.tenant_id,
@@ -69,16 +105,7 @@ def to_run_response(
         policy_decision=run.policy_decision,
         policy_reason=run.policy_reason,
         approval_required=run.approval_required,
-        approval=(
-            AgentApprovalResponse(
-                decision=approval.decision,
-                reviewer_id=approval.reviewer_id,
-                version=approval.version,
-                decided_at=approval.decided_at,
-            )
-            if approval
-            else None
-        ),
+        approval=approval_resp,
         result=run.result_json,
         result_hash=run.result_hash,
         failure_code=run.failure_code,
@@ -113,12 +140,30 @@ def get_agent_run(
     return to_run_response(session=session, service=service, run=run)
 
 
+@router.get("/runs/{run_id}/approval", response_model=ApprovalRequestDetailResponse)
+def get_agent_run_approval(
+    run_id: str,
+    session: SessionDependency,
+    service: Annotated[AgentRunService, Depends(get_agent_service)],
+    context: RequestContextDependency,
+) -> ApprovalRequestDetailResponse:
+    try:
+        detail = service.get_approval_detail(
+            session=session,
+            run_id=run_id,
+            tenant_id=context.tenant_id,
+        )
+    except AgentRunNotFoundError as err:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err)) from err
+    return ApprovalRequestDetailResponse.model_validate(detail)
+
+
 @router.post("/runs", response_model=AgentRunResponse, status_code=status.HTTP_201_CREATED)
 def propose_agent_action(
     request: AgentActionRequest,
     session: SessionDependency,
     service: Annotated[AgentRunService, Depends(get_agent_service)],
-    context: ExecutorContextDependency,
+    context: RequesterContextDependency,
 ) -> AgentRunResponse:
     run = service.propose_action(
         session=session,

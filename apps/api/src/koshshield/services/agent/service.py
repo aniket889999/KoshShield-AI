@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
@@ -17,6 +17,16 @@ from koshshield.models import (
     DocumentRecord,
     DocumentState,
     RedactionFinding,
+)
+from koshshield.services.agent.lifecycle import (
+    DEFAULT_APPROVAL_TTL_SECONDS,
+    ApprovalExpiredError,
+    ApprovalReplayError,
+    ApprovalTransitionError,
+    StaleDocumentVersionError,
+    is_approval_expired,
+    validate_approval_transition,
+    validate_execution_prerequisites,
 )
 from koshshield.services.agent.policy import AgentPolicyEngine
 from koshshield.services.agent.tool_runner import ToolRunner, ToolRunnerError
@@ -123,7 +133,19 @@ class AgentRunService:
         )
         assessment = workflow_state["assessment"]
         allowed = assessment.decision == "ALLOWED"
-        stored_arguments = assessment.normalized_arguments if allowed else {}
+        if allowed:
+            stored_arguments = dict(assessment.normalized_arguments)
+            if "document_id" in stored_arguments:
+                doc = session.scalar(
+                    select(DocumentRecord).where(
+                        DocumentRecord.id == str(stored_arguments["document_id"]),
+                        DocumentRecord.tenant_id == tenant_id,
+                    )
+                )
+                if doc:
+                    stored_arguments["document_version"] = doc.version
+        else:
+            stored_arguments = {}
         argument_hash = argument_integrity_hash(
             stored_arguments if allowed else arguments,
             self.integrity_secret,
@@ -193,8 +215,16 @@ class AgentRunService:
             raise SeparationOfDutiesError("The requester cannot approve their own action")
 
         approval = self.get_approval(session, run.id)
-        if not approval or approval.decision != ApprovalDecision.PENDING:
+        if not approval:
             raise AgentRunConflictError("Approval is no longer pending")
+        try:
+            validate_approval_transition(
+                current_state=approval.decision,
+                target_state=decision,
+                created_at=approval.created_at,
+            )
+        except (ApprovalTransitionError, ApprovalExpiredError, ApprovalReplayError) as exc:
+            raise AgentRunConflictError(str(exc)) from exc
 
         now = datetime.now(UTC)
         approval.decision = decision
@@ -251,11 +281,31 @@ class AgentRunService:
         approval = self.get_approval(session, run.id)
         if not approval or approval.decision != ApprovalDecision.APPROVED:
             raise AgentRunConflictError("Persisted human approval is required")
-        expected_arguments_hash = argument_integrity_hash(
-            run.arguments_json,
-            self.integrity_secret,
-        )
-        if not hmac.compare_digest(expected_arguments_hash, run.arguments_hash):
+
+        active_doc_version = None
+        if "document_id" in run.arguments_json:
+            doc_id = str(run.arguments_json["document_id"])
+            doc = session.scalar(
+                select(DocumentRecord).where(
+                    DocumentRecord.id == doc_id,
+                    DocumentRecord.tenant_id == run.tenant_id,
+                )
+            )
+            if doc:
+                active_doc_version = doc.version
+
+        try:
+            validate_execution_prerequisites(
+                approval=approval,
+                run=run,
+                integrity_secret=self.integrity_secret,
+                active_document_version=active_doc_version,
+            )
+        except StaleDocumentVersionError as exc:
+            raise AgentRunConflictError(str(exc)) from exc
+        except (ApprovalTransitionError, ApprovalExpiredError, ApprovalReplayError) as exc:
+            raise AgentRunConflictError(str(exc)) from exc
+        except ValueError:
             return self._fail_closed(
                 session=session,
                 run=run,
@@ -312,6 +362,8 @@ class AgentRunService:
             run.policy_reason = "Approved action completed with verified sandbox output."
             run.version += 1
             run.updated_at = datetime.now(UTC)
+            approval.decision = ApprovalDecision.EXECUTED
+            approval.version += 1
             append_audit_event(
                 session,
                 tenant_id=tenant_id,
@@ -361,6 +413,10 @@ class AgentRunService:
         run.result_hash = None
         run.version += 1
         run.updated_at = datetime.now(UTC)
+        approval = self.get_approval(session, run.id)
+        if approval and approval.decision == ApprovalDecision.APPROVED:
+            approval.decision = ApprovalDecision.FAILED
+            approval.version += 1
         append_audit_event(
             session,
             tenant_id=run.tenant_id,
@@ -378,6 +434,51 @@ class AgentRunService:
         session.commit()
         session.refresh(run)
         return run
+
+    def get_approval_detail(
+        self,
+        *,
+        session: Session,
+        run_id: str,
+        tenant_id: str,
+    ) -> dict[str, object]:
+        run = self.get_run(session=session, run_id=run_id, tenant_id=tenant_id)
+        approval = self.get_approval(session, run.id)
+        if not approval:
+            raise AgentRunNotFoundError("Approval record not found for run")
+        expires_at = approval.created_at + timedelta(seconds=DEFAULT_APPROVAL_TTL_SECONDS)
+        is_expired = is_approval_expired(approval.created_at)
+        doc_id = (
+            str(run.arguments_json.get("document_id"))
+            if "document_id" in run.arguments_json
+            else None
+        )
+        doc_ver = (
+            int(run.arguments_json["document_version"])
+            if "document_version" in run.arguments_json
+            else None
+        )
+        return {
+            "id": approval.id,
+            "agent_run_id": run.id,
+            "tenant_id": run.tenant_id,
+            "actor_id": run.actor_id,
+            "tool_name": run.tool_name,
+            "classification": run.classification,
+            "status": run.status,
+            "decision": approval.decision,
+            "reviewer_id": approval.reviewer_id,
+            "arguments_hash": run.arguments_hash,
+            "argument_summary": run.argument_summary,
+            "document_id": doc_id,
+            "document_version": doc_ver,
+            "created_at": approval.created_at,
+            "decided_at": approval.decided_at,
+            "expires_at": expires_at,
+            "is_expired": is_expired,
+            "result_hash": run.result_hash,
+            "version": approval.version,
+        }
 
     @staticmethod
     def _resource_is_authorized(

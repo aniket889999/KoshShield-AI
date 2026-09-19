@@ -237,9 +237,38 @@ class AgentActionRequest(BaseModel):
 
 class AgentApprovalResponse(BaseModel):
     decision: str
-    reviewer_id: str | None
-    version: int
-    decided_at: datetime | None
+    reviewer_id: str | None = None
+    version: int = 1
+    decided_at: datetime | None = None
+    expires_at: datetime | None = None
+    is_expired: bool = False
+    action_name: str | None = None
+    risk_level: str | None = None
+    input_digest: str | None = None
+    document_id: str | None = None
+    document_version: int | None = None
+
+
+class ApprovalRequestDetailResponse(BaseModel):
+    id: str
+    agent_run_id: str
+    tenant_id: str
+    actor_id: str
+    tool_name: str
+    classification: str
+    status: str
+    decision: str
+    reviewer_id: str | None = None
+    arguments_hash: str
+    argument_summary: str
+    document_id: str | None = None
+    document_version: int | None = None
+    created_at: datetime
+    decided_at: datetime | None = None
+    expires_at: datetime | None = None
+    is_expired: bool = False
+    result_hash: str | None = None
+    version: int = 1
 
 
 class AgentRunResponse(BaseModel):

@@ -75,6 +75,9 @@ def require_roles(*allowed_roles: str):
     return role_checker
 
 
+RequesterContextDependency = Annotated[
+    RequestContext, Depends(require_roles("requester", "executor"))
+]
 ReviewerContextDependency = Annotated[RequestContext, Depends(require_roles("reviewer"))]
 ApproverContextDependency = Annotated[RequestContext, Depends(require_roles("approver"))]
 ExecutorContextDependency = Annotated[RequestContext, Depends(require_roles("executor"))]
