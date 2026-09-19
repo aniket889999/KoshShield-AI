@@ -180,9 +180,27 @@ class AgentRunService:
             session,
             tenant_id=tenant_id,
             actor_id=actor_id,
+            event_type="AGENT_POLICY_EVALUATED",
+            resource_type="agent_run",
+            resource_id=run.id,
+            details={
+                "run_id": run.id,
+                "tenant_id": tenant_id,
+                "tool_name": tool_name,
+                "classification": classification,
+                "arguments_hash": argument_hash,
+                "policy_decision": assessment.decision,
+                "policy_reason_code": assessment.reason_code,
+                "approval_required": assessment.approval_required,
+            },
+        )
+        append_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_id=actor_id,
             event_type="AGENT_ACTION_PROPOSED" if allowed else "AGENT_ACTION_REJECTED",
             resource_type="agent_run",
-            resource_id=None,
+            resource_id=run.id,
             details={
                 "run_id": run.id,
                 "tenant_id": tenant_id,
@@ -251,7 +269,7 @@ class AgentRunService:
                 else "AGENT_ACTION_REJECTED"
             ),
             resource_type="agent_run",
-            resource_id=None,
+            resource_id=run.id,
             details={
                 "run_id": run.id,
                 "tenant_id": tenant_id,
@@ -341,6 +359,21 @@ class AgentRunService:
         run.failure_code = None
         run.version += 1
         run.updated_at = datetime.now(UTC)
+        append_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_id=executor_id,
+            event_type="AGENT_EXECUTION_ATTEMPTED",
+            resource_type="agent_run",
+            resource_id=run.id,
+            details={
+                "run_id": run.id,
+                "tenant_id": tenant_id,
+                "tool_name": run.tool_name,
+                "executor_id": executor_id,
+                "approval_id": approval.id,
+            },
+        )
         session.commit()
 
         try:
@@ -371,7 +404,7 @@ class AgentRunService:
                 actor_id=executor_id,
                 event_type="AGENT_ACTION_COMPLETED",
                 resource_type="agent_run",
-                resource_id=None,
+                resource_id=run.id,
                 details={
                     "run_id": run.id,
                     "tenant_id": tenant_id,
@@ -424,7 +457,7 @@ class AgentRunService:
             actor_id=actor_id,
             event_type="AGENT_ACTION_REJECTED" if rejected else "AGENT_ACTION_FAILED",
             resource_type="agent_run",
-            resource_id=None,
+            resource_id=run.id,
             details={
                 "run_id": run.id,
                 "tenant_id": run.tenant_id,

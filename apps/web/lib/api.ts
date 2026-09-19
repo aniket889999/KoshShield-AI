@@ -461,6 +461,74 @@ export function executeAgentAction(runId: string, version: number) {
   });
 }
 
+export interface DeliverableCitation {
+  chunk_id: string;
+  page_number: number;
+  snippet_hash: string;
+  masked_snippet: string;
+  char_start: number;
+  char_end: number;
+}
+
+export interface DeliverableProvenance {
+  action_type: string;
+  policy_result: string;
+  approval_id: string;
+  document_id?: string | null;
+  document_version?: number | null;
+  active_index_version?: number | null;
+  evidence_identities: string[];
+  generated_at: string;
+  verification_status: string;
+  disclaimer: string;
+}
+
+export interface AgentDeliverable {
+  id: string;
+  run_id: string;
+  approval_id: string;
+  tenant_id: string;
+  action_name: string;
+  title: string;
+  content: Record<string, unknown> | string;
+  media_type: string;
+  citations: DeliverableCitation[];
+  provenance: DeliverableProvenance;
+}
+
+export interface AgentApprovalDetail {
+  approval_id: string;
+  agent_run_id: string;
+  tenant_id: string;
+  actor_id: string;
+  tool_name: string;
+  decision: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "EXECUTED" | "FAILED";
+  reviewer_id?: string | null;
+  decided_at?: string | null;
+  created_at: string;
+  version: number;
+  is_expired: boolean;
+  expires_at: string;
+  arguments_digest: string;
+  document_id?: string | null;
+  target_document_version?: number | null;
+  active_document_version?: number | null;
+  is_stale_document_version: boolean;
+}
+
+export function getAgentRunDeliverable(runId: string) {
+  return request<AgentDeliverable>(`/agent/runs/${runId}/deliverable`, {
+    headers: { "X-Tenant-ID": "default" },
+  });
+}
+
+export function getAgentRunApproval(runId: string) {
+  return request<AgentApprovalDetail>(`/agent/runs/${runId}/approval`, {
+    headers: { "X-Tenant-ID": "default" },
+  });
+}
+
+
 export interface ComponentReadiness {
   component_id: string;
   display_name: string;

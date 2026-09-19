@@ -771,6 +771,20 @@ code { color: var(--navy-800); font-size: 9px; }
 .agent-empty-state strong { color: var(--ink-900); font-size: 13px; }
 .agent-empty-state span { font-size: 11px; }
 
+.agent-deliverable-toggle { border: 1px solid var(--line); background: white; color: var(--teal-700); }
+.agent-deliverable-toggle:hover:not(:disabled) { background: #f0f7f5; }
+.agent-deliverable-box { margin-top: 10px; border: 1px solid #bddacb; border-radius: 6px; background: #f7fbf9; padding: 12px; display: grid; gap: 8px; }
+.agent-deliverable-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.agent-deliverable-title { color: var(--navy-900); font-size: 11px; font-weight: 800; }
+.agent-deliverable-badge { font-size: 9px; font-weight: 800; color: var(--teal-700); background: #d7ede6; padding: 2px 7px; border-radius: 3px; }
+.agent-deliverable-meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--ink-500); font-size: 9px; }
+.agent-deliverable-citations { display: grid; gap: 6px; margin-top: 4px; }
+.agent-citation-card { border: 1px solid #cbe3da; border-radius: 4px; background: white; padding: 8px; font-size: 9px; }
+.agent-citation-card strong { color: var(--teal-700); display: block; margin-bottom: 2px; }
+.agent-citation-card p { margin: 0; color: var(--ink-700); font-style: italic; }
+.agent-deliverable-disclaimer { margin: 0; font-size: 8px; color: var(--ink-500); font-style: italic; border-top: 1px solid #e1efe9; padding-top: 6px; }
+
+
 
 @media (max-width: 1120px) {
   .service-grid { grid-template-columns: repeat(2, 1fr); }
