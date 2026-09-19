@@ -488,7 +488,7 @@ class AgentRunService:
         arguments: dict[str, object],
         tenant_id: str,
     ) -> bool:
-        if tool_name != "document_report":
+        if "document_id" not in arguments:
             return True
         document_id = arguments.get("document_id")
         if not isinstance(document_id, str):
@@ -511,10 +511,11 @@ class AgentRunService:
         session: Session,
         run: AgentRunRecord,
     ) -> dict[str, object]:
-        if run.tool_name == "calculator":
-            return dict(run.arguments_json)
+        payload = dict(run.arguments_json)
+        if "document_id" not in payload:
+            return payload
 
-        document_id = str(run.arguments_json["document_id"])
+        document_id = str(payload["document_id"])
         document = session.scalar(
             select(DocumentRecord).where(
                 DocumentRecord.id == document_id,
@@ -539,14 +540,13 @@ class AgentRunService:
                 DocumentChunkRecord.index_version == document.active_index_version,
             )
         )
-        return {
-            "document": {
-                "document_id": document.id,
-                "evidence_hash": document.sha256,
-                "filename": document.filename,
-                "status": document.status,
-                "page_count": int(page_count or 0),
-                "redaction_count": int(redaction_count or 0),
-                "chunk_count": int(chunk_count or 0),
-            }
+        payload["document"] = {
+            "document_id": document.id,
+            "evidence_hash": document.sha256,
+            "filename": document.filename,
+            "status": document.status,
+            "page_count": int(page_count or 0),
+            "redaction_count": int(redaction_count or 0),
+            "chunk_count": int(chunk_count or 0),
         }
+        return payload

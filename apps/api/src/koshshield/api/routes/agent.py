@@ -26,6 +26,7 @@ from koshshield.services.agent.lifecycle import (
     DEFAULT_APPROVAL_TTL_SECONDS,
     is_approval_expired,
 )
+from koshshield.services.agent.runner import RestrictedDeterministicToolRunner
 from koshshield.services.agent.service import (
     AgentRunConflictError,
     AgentRunNotFoundError,
@@ -40,11 +41,13 @@ SettingsDependency = Annotated[Settings, Depends(get_settings)]
 
 
 def get_tool_runner(settings: SettingsDependency) -> ToolRunner:
-    return DockerToolRunner(
-        image=settings.tool_runner_image,
-        timeout_seconds=settings.tool_runner_timeout_seconds,
-        max_output_bytes=settings.tool_runner_max_output_bytes,
-    )
+    if getattr(settings, "tool_runner_backend", "restricted") == "docker":
+        return DockerToolRunner(
+            image=settings.tool_runner_image,
+            timeout_seconds=settings.tool_runner_timeout_seconds,
+            max_output_bytes=settings.tool_runner_max_output_bytes,
+        )
+    return RestrictedDeterministicToolRunner()
 
 
 def get_agent_service(
