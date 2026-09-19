@@ -302,3 +302,38 @@ class AgentApprovalDecisionRequest(BaseModel):
 
 class AgentExecuteRequest(BaseModel):
     version: int = Field(ge=1)
+
+
+class DeliverableCitationResponse(BaseModel):
+    chunk_id: str
+    page_number: int
+    snippet_hash: str
+    masked_snippet: str
+    char_start: int
+    char_end: int
+
+
+class DeliverableProvenanceResponse(BaseModel):
+    action_type: str
+    policy_result: str
+    approval_id: str
+    document_id: str | None = None
+    document_version: int | None = None
+    active_index_version: int | None = None
+    evidence_identities: list[str] = Field(default_factory=list)
+    generated_at: datetime
+    verification_status: str
+    disclaimer: str
+
+
+class AgentDeliverableResponse(BaseModel):
+    id: str
+    run_id: str
+    approval_id: str
+    tenant_id: str
+    action_name: str
+    title: str
+    content: dict[str, object] | str
+    media_type: str = "application/json"
+    citations: list[DeliverableCitationResponse] = Field(default_factory=list)
+    provenance: DeliverableProvenanceResponse

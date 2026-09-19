@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
@@ -455,7 +456,7 @@ class AgentRunService:
         )
         doc_ver = (
             int(run.arguments_json["document_version"])
-            if "document_version" in run.arguments_json
+            if run.arguments_json.get("document_version") is not None
             else None
         )
         return {
@@ -479,6 +480,21 @@ class AgentRunService:
             "result_hash": run.result_hash,
             "version": approval.version,
         }
+
+    def get_deliverable(
+        self,
+        *,
+        session: Session,
+        run_id: str,
+        tenant_id: str,
+    ) -> Any:
+        from koshshield.services.agent.deliverables import build_evidence_deliverable
+
+        run = self.get_run(session=session, run_id=run_id, tenant_id=tenant_id)
+        approval = self.get_approval(session, run.id)
+        if not approval:
+            raise AgentRunNotFoundError("Approval record not found for run")
+        return build_evidence_deliverable(session=session, run=run, approval=approval)
 
     @staticmethod
     def _resource_is_authorized(

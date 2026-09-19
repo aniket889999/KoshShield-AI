@@ -152,7 +152,7 @@ class AgentPolicyEngine:
         # 7. Validate typed action schema & argument contracts
         try:
             validated_args = validate_action_arguments(tool_name, arguments)
-            normalized_args = validated_args.model_dump()
+            normalized_args = validated_args.model_dump(exclude_none=True)
         except ActionValidationError as err:
             reason_code = (
                 PolicyReasonCode.PII_IN_TOOL_ARGUMENTS

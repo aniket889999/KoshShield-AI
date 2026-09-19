@@ -11,6 +11,7 @@ from koshshield.schemas import (
     AgentActionRequest,
     AgentApprovalDecisionRequest,
     AgentApprovalResponse,
+    AgentDeliverableResponse,
     AgentExecuteRequest,
     AgentRunResponse,
     ApprovalRequestDetailResponse,
@@ -78,7 +79,7 @@ def to_run_response(
         )
         doc_ver = (
             int(run.arguments_json["document_version"])
-            if "document_version" in run.arguments_json
+            if run.arguments_json.get("document_version") is not None
             else None
         )
         approval_resp = AgentApprovalResponse(
@@ -159,6 +160,24 @@ def get_agent_run_approval(
     except AgentRunNotFoundError as err:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err)) from err
     return ApprovalRequestDetailResponse.model_validate(detail)
+
+
+@router.get("/runs/{run_id}/deliverable", response_model=AgentDeliverableResponse)
+def get_agent_run_deliverable(
+    run_id: str,
+    session: SessionDependency,
+    service: Annotated[AgentRunService, Depends(get_agent_service)],
+    context: RequestContextDependency,
+) -> AgentDeliverableResponse:
+    try:
+        deliverable = service.get_deliverable(
+            session=session,
+            run_id=run_id,
+            tenant_id=context.tenant_id,
+        )
+    except AgentRunNotFoundError as err:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(err)) from err
+    return AgentDeliverableResponse.model_validate(deliverable.model_dump())
 
 
 @router.post("/runs", response_model=AgentRunResponse, status_code=status.HTTP_201_CREATED)

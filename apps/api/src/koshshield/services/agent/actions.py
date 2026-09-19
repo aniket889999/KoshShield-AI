@@ -97,6 +97,7 @@ SafeString = Annotated[
 
 class BaseActionArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    document_version: int | None = Field(default=None, ge=1)
 
 
 class SummarizeDocumentArguments(BaseActionArguments):
