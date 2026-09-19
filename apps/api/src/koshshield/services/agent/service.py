@@ -383,14 +383,47 @@ class AgentRunService:
             )
             run.status = AgentRunState.VERIFYING
             run.state_history = [*run.state_history, AgentRunState.VERIFYING]
+            output_data = runner_result.payload["result"]
             persisted_result: dict[str, object] = {
                 "tool": run.tool_name,
-                "output": runner_result.payload["result"],
+                "output": output_data,
                 "sandbox": runner_result.sandbox,
                 "sandbox_output_hash": runner_result.output_hash,
             }
             run.result_json = persisted_result
             run.result_hash = canonical_json_hash(persisted_result)
+
+            if isinstance(output_data, dict) and output_data.get("status") == "NOT_EXECUTED":
+                code = str(output_data.get("code", "MODEL_RUNTIME_UNAVAILABLE"))
+                run.status = AgentRunState.FAILED
+                run.state_history = [*run.state_history, AgentRunState.FAILED]
+                run.failure_code = code
+                run.policy_reason = (
+                    "Model action was not executed because "
+                    "approved local neural runtime is unavailable."
+                )
+                run.version += 1
+                run.updated_at = datetime.now(UTC)
+                approval.decision = ApprovalDecision.FAILED
+                approval.version += 1
+                append_audit_event(
+                    session,
+                    tenant_id=tenant_id,
+                    actor_id=executor_id,
+                    event_type="AGENT_ACTION_FAILED",
+                    resource_type="agent_run",
+                    resource_id=run.id,
+                    details={
+                        "run_id": run.id,
+                        "tenant_id": tenant_id,
+                        "tool_name": run.tool_name,
+                        "failure_code": code,
+                    },
+                )
+                session.commit()
+                session.refresh(run)
+                return run
+
             run.status = AgentRunState.COMPLETED
             run.state_history = [*run.state_history, AgentRunState.COMPLETED]
             run.policy_reason = "Approved action completed with verified sandbox output."

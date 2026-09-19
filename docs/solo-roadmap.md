@@ -1,6 +1,19 @@
 # Solo development roadmap
 
-## Current demo operations layer checkpoint (2026-09-18)
+## Current policy-gated local agent and deliverable workflow checkpoint (2026-09-19)
+
+- Strict typed action contracts for permitted local actions (`calculator`, `calculate_procurement_comparison`, `draft_approval_note`, `draft_report`, `generate_verified_code`, `document_report`, `summarize_document`) with payload limits (64KB), extra field forbidding, and Indian PII scanning.
+- Deterministic policy evaluator deciding `ALLOW`, `REQUIRE_APPROVAL`, or `DENY` based on tenant, user roles, document approval state, action risk level, and runtime readiness, failing closed on incomplete context.
+- Persisted approval-request lifecycle models and state transitions (`PENDING`, `APPROVED`, `REJECTED`, `EXPIRED`, `EXECUTED`, `FAILED`) with 24-hour TTL, argument integrity hashing, and stale document version detection.
+- RBAC-protected approval APIs enforcing separation of duties (requester cannot approve), cross-tenant isolation, double execution / replay prevention, and stale document execution prevention.
+- Restricted deterministic in-process tool runner with pure allowlisted Python handlers for calculations, procurement comparisons, drafting notes/reports, and verified code template generation without subprocess, shell, SQL, or network access.
+- Truthful offline neural runtime handling: model-backed actions (`summarize_document`) return `NOT_EXECUTED` with stable code `MODEL_RUNTIME_UNAVAILABLE` when local neural models are unavailable.
+- Evidence-bound reviewable deliverables with citations referencing masked document/page/chunk evidence, cryptographic provenance tracking, and explicit non-binding legal disclaimers.
+- Metadata-only audit events for policy evaluation, request creation, approval/rejection, execution attempts, and execution results, guaranteeing zero leakage of raw prompts, document body text, PII, tokens, or stack traces.
+- Enriched frontend agent approvals workspace with support for 7 permitted actions, deliverable view with citations, policy boundaries, and safe failure reason visibility.
+- Comprehensive end-to-end integration tests and operator guide: [Agent governance workflow](agent_governance_workflow.md).
+
+## Demo operations layer checkpoint (2026-09-18)
 
 - Typed demo-readiness domain model reports all 7 core components with safe, standardized failure codes.
 - Authenticated, sanitized `/api/v1/system/readiness` endpoint guards against internal path and secret leaks.

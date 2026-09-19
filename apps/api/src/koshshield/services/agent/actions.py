@@ -133,9 +133,22 @@ class ExtractStructuredFieldsArguments(BaseActionArguments):
 
 class CalculateProcurementComparisonArguments(BaseActionArguments):
     case_id: Annotated[str, StringConstraints(min_length=3, max_length=64)]
+    document_id: str | None = None
     comparison_criteria: list[
         Literal["flow_rate", "pressure", "delivery_lead_time", "warranty_years"]
     ] = Field(default_factory=lambda: ["flow_rate", "pressure"])
+
+    @field_validator("document_id")
+    @classmethod
+    def validate_document_id(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        try:
+            return str(UUID(v))
+        except ValueError as exc:
+            raise ActionValidationError(
+                ActionFailureCode.INVALID_ARGUMENTS, "document_id must be a valid UUID"
+            ) from exc
 
     @field_validator("case_id")
     @classmethod
