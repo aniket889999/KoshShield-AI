@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -42,10 +43,13 @@ class AgentRunState:
     FAILED = "FAILED"
 
 
-class ApprovalDecision:
+class ApprovalDecision(StrEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+    EXECUTED = "EXECUTED"
+    FAILED = "FAILED"
 
 
 VALID_DOCUMENT_TRANSITIONS: dict[str, set[str]] = {
