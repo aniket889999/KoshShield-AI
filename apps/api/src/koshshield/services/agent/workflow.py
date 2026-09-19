@@ -7,10 +7,16 @@ from koshshield.services.agent.policy import AgentPolicyEngine, PolicyAssessment
 
 
 class AgentPolicyState(TypedDict):
-    tool_name: str
-    arguments: dict[str, object]
-    classification: str
+    tool_name: str | None
+    arguments: dict[str, object] | None
+    classification: str | None
     resource_authorized: bool
+    tenant_id: NotRequired[str | None]
+    roles: NotRequired[list[str] | set[str] | None]
+    document_status: NotRequired[str | None]
+    document_tenant_id: NotRequired[str | None]
+    has_evidence: NotRequired[bool]
+    runtime_ready: NotRequired[bool]
     state_history: list[str]
     assessment: NotRequired[PolicyAssessment]
     status: NotRequired[str]
@@ -36,10 +42,16 @@ class AgentPolicyWorkflow:
     def evaluate(
         self,
         *,
-        tool_name: str,
-        arguments: dict[str, object],
-        classification: str,
-        resource_authorized: bool,
+        tool_name: str | None,
+        arguments: dict[str, object] | None,
+        classification: str | None,
+        resource_authorized: bool = True,
+        tenant_id: str | None = None,
+        roles: list[str] | set[str] | None = None,
+        document_status: str | None = None,
+        document_tenant_id: str | None = None,
+        has_evidence: bool = True,
+        runtime_ready: bool = True,
     ) -> AgentPolicyState:
         return self.graph.invoke(
             {
@@ -47,16 +59,28 @@ class AgentPolicyWorkflow:
                 "arguments": arguments,
                 "classification": classification,
                 "resource_authorized": resource_authorized,
+                "tenant_id": tenant_id,
+                "roles": roles,
+                "document_status": document_status,
+                "document_tenant_id": document_tenant_id,
+                "has_evidence": has_evidence,
+                "runtime_ready": runtime_ready,
                 "state_history": [AgentRunState.REQUESTED],
             }
         )
 
     def _evaluate_policy(self, state: AgentPolicyState) -> AgentPolicyState:
         assessment = self.policy_engine.evaluate(
-            tool_name=state["tool_name"],
-            arguments=state["arguments"],
-            classification=state["classification"],
-            resource_authorized=state["resource_authorized"],
+            tool_name=state.get("tool_name"),
+            arguments=state.get("arguments"),
+            classification=state.get("classification"),
+            resource_authorized=state.get("resource_authorized", True),
+            tenant_id=state.get("tenant_id"),
+            roles=state.get("roles"),
+            document_status=state.get("document_status"),
+            document_tenant_id=state.get("document_tenant_id"),
+            has_evidence=state.get("has_evidence", True),
+            runtime_ready=state.get("runtime_ready", True),
         )
         return {
             **state,
